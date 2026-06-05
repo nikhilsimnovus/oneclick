@@ -29,7 +29,7 @@ from flask import Flask, abort, jsonify, redirect, render_template_string, reque
 # OneClick UI version. Bump on every push to oneclick repo so customers
 # can confirm the Update button actually applied — the new number shows
 # up in the topbar after the page reloads.
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 
 SCRIPT_DIR = Path(os.environ.get("PERFQA_SCRIPT_DIR", "/opt/perf-qa"))
 SCRIPT = SCRIPT_DIR / "collect_perf_data.sh"
@@ -185,7 +185,13 @@ def _seed_profiles() -> dict:
 
 
 def load_profiles() -> dict:
-    """Return the {name: profile} dict from disk (seeding if missing)."""
+    """Return the {name: profile} dict from disk (seeding if missing).
+
+    Backfills any BLANK fixed-key from the seed so older profiles
+    (saved before we shipped sensible defaults for SIM_API_USER /
+    SIMNOVATOR_USER / etc.) inherit the new values without the user
+    having to recreate the profile. Non-blank values are never touched.
+    """
     if not PROFILES_JSON.exists():
         save_profiles_dict(_seed_profiles()["profiles"])
     try:
@@ -199,7 +205,14 @@ def load_profiles() -> dict:
             pass
         save_profiles_dict(_seed_profiles()["profiles"])
         data = json.loads(PROFILES_JSON.read_text())
-    return data.get("profiles", {})
+    profiles = data.get("profiles", {})
+    seed_fixed = next(iter(_INITIAL_PROFILES.values()))["fixed"]
+    for prof in profiles.values():
+        fixed = prof.setdefault("fixed", {})
+        for k, v in seed_fixed.items():
+            if not fixed.get(k):  # missing OR blank
+                fixed[k] = v
+    return profiles
 
 
 def save_profiles_dict(profiles: dict) -> None:
@@ -237,7 +250,7 @@ _INITIAL_PROFILES = {
             "COLLECT_HEAT":            "1",
             "COLLECT_ANALYZE":         "1",
 
-            "UE_USER":                 "",   # e.g. sysadmin
+            "UE_USER":                 "sysadmin",   # almost always sysadmin in a Simnovator rig
             "UE_SSH_PORT":             "22",
             "UE_PASS":                 "",   # blank = SSH key auth
             "UE_CFG_PATH":             "/root/ue/config/ue.cfg",
@@ -249,15 +262,15 @@ _INITIAL_PROFILES = {
             "IPERF_LOG_DIR":           "/root/simnovator-app-manager/web/iperf/logs",
             "IPERF_MAX_SUBDIRS":       "10",
 
-            "SIMNOVATOR_USER":         "",   # e.g. sysadmin
+            "SIMNOVATOR_USER":         "sysadmin",   # almost always sysadmin
             "SIMNOVATOR_SSH_PORT":     "22",
             "SIMNOVATOR_PASS":         "",   # blank = SSH key auth
             "CONTAINER_ENGINE":        "",   # blank = auto (prefers podman)
             "SIMNOVATOR_CONTAINERS":   "",   # blank = all running
             "DOCKER_LOG_TAIL":         "20000",
 
-            "SIM_API_USER":            "",   # Simnovator GUI/API admin
-            "SIM_API_PASS":            "",
+            "SIM_API_USER":            "admin",   # Simnovator GUI/API admin — always admin/admin on stock rigs
+            "SIM_API_PASS":            "admin",
             "SIM_API_LOGIN_PATH":      "/v2/login",
             "SIM_API_STATS_BUDGET":    "1000",
             "SIM_SCREENSHOT_PAGES":    "global,cell,ue,logs,health-check",
@@ -268,7 +281,7 @@ _INITIAL_PROFILES = {
             "BESZEL_CHART_RANGE":      "1h",
             "BESZEL_PYTHON":           "/opt/perf-qa-ui/venv/bin/python",
 
-            "CALLBOX_USER":            "",   # e.g. sysadmin
+            "CALLBOX_USER":            "root",   # Amarisoft callbox ships as root
             "CALLBOX_SSH_PORT":        "22",
             "CALLBOX_PASS":            "",   # callbox typically uses password auth (Amarisoft)
             "ENB_CFG_PATH":            "/root/enb/config/enb.cfg",
@@ -276,7 +289,7 @@ _INITIAL_PROFILES = {
             "IMS_CFG_PATH":            "/root/mme/config/ims.cfg",
             "AMARISOFT_WS_CMD":        "",   # blank = auto via ws.js for `t`,`ue`,`cell`
 
-            "APP_SERVER_USER":         "",   # e.g. sysadmin
+            "APP_SERVER_USER":         "sysadmin",   # almost always sysadmin
             "APP_SERVER_SSH_PORT":     "22",
             "APP_SERVER_PASS":         "",   # blank = SSH key auth
             "IPERF_TARGET":            "",   # optional host:port reachability check
