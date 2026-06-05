@@ -29,7 +29,7 @@ from flask import Flask, abort, jsonify, redirect, render_template_string, reque
 # OneClick UI version. Bump on every push to oneclick repo so customers
 # can confirm the Update button actually applied — the new number shows
 # up in the topbar after the page reloads.
-VERSION = "1.0.3"
+VERSION = "1.0.4"
 
 SCRIPT_DIR = Path(os.environ.get("PERFQA_SCRIPT_DIR", "/opt/perf-qa"))
 SCRIPT = SCRIPT_DIR / "collect_perf_data.sh"
@@ -1453,7 +1453,7 @@ body{margin:0;font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Rob
 .topnav a:hover{background:rgba(255,255,255,.06);color:#fff}
 .topnav a.active{background:var(--brand);color:#fff}
 .topbar .pill{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:11px;background:#0f0f1a;border:1px solid #3a3a55;padding:2px 8px;border-radius:4px;color:#cbd5e1}
-.version-pill{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:10.5px;font-weight:600;color:#cbd5e1;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);padding:2px 7px;border-radius:4px;letter-spacing:.02em;line-height:1.4}
+.version-pill{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:10.5px;font-weight:600;color:#cbd5e1;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);padding:2px 7px;border-radius:4px;letter-spacing:.02em;line-height:1.4;margin-left:8px}
 .update-btn{display:inline-flex;align-items:center;gap:5px;background:rgba(34,197,94,.18);border:1px solid rgba(34,197,94,.5);color:#dcfce7;font:500 11.5px ui-sans-serif,sans-serif;padding:4px 10px;border-radius:6px;cursor:pointer;transition:background .15s}
 .update-btn:hover{background:rgba(34,197,94,.32);color:#fff}
 .update-btn:disabled{cursor:wait;opacity:.7}
@@ -1660,7 +1660,7 @@ small{color:var(--mut);font-weight:400}
 <header class="topbar">
   <img class="logo" src="/static/logo.svg" alt="Simnovus">
   <div class="divider"></div>
-  <span class="title">OneClick</span><span class="brand-sub">collector</span>
+  <span class="title">OneClick</span>{% if version %}<span class="version-pill" title="OneClick UI version — bumps when you click Update and pick up a new build">v{{ version }}</span>{% endif %}<span class="brand-sub">collector</span>
   <nav class="topnav">
     <a href="/" class="active">Collector</a>
     <a href="/logs">Logs</a>
@@ -1671,7 +1671,6 @@ small{color:var(--mut);font-weight:400}
       <span class="ri-dot"></span>
       <span class="ri-text">Running: <strong id="ri-tc">…</strong></span>
     </a>
-    {% if version %}<span class="version-pill" title="OneClick UI version — bumps when you click Update and pick up a new build">v{{ version }}</span>{% endif %}
     <button type="button" class="update-btn" id="update-btn" onclick="runUpdate()"
             title="Fetch the latest OneClick from GitHub and re-install. Service restarts automatically.">
       <span class="update-icon" id="update-icon">⤓</span>
@@ -2232,7 +2231,7 @@ body{margin:0;font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Rob
 .topnav a:hover{background:rgba(255,255,255,.06);color:#fff}
 .topnav a.active{background:var(--brand);color:#fff}
 .topbar .pill{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:11px;background:#0f0f1a;border:1px solid #3a3a55;padding:2px 8px;border-radius:4px;color:#cbd5e1}
-.version-pill{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:10.5px;font-weight:600;color:#cbd5e1;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);padding:2px 7px;border-radius:4px;letter-spacing:.02em;line-height:1.4}
+.version-pill{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:10.5px;font-weight:600;color:#cbd5e1;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);padding:2px 7px;border-radius:4px;letter-spacing:.02em;line-height:1.4;margin-left:8px}
 .update-btn{display:inline-flex;align-items:center;gap:5px;background:rgba(34,197,94,.18);border:1px solid rgba(34,197,94,.5);color:#dcfce7;font:500 11.5px ui-sans-serif,sans-serif;padding:4px 10px;border-radius:6px;cursor:pointer;transition:background .15s}
 .update-btn:hover{background:rgba(34,197,94,.32);color:#fff}
 .update-btn:disabled{cursor:wait;opacity:.7}
@@ -2306,7 +2305,7 @@ details pre{margin:10px 0 0;padding:12px;background:#0f1117;color:#e2e8f0;border
 <header class="topbar">
   <img class="logo" src="/static/logo.svg" alt="Simnovus">
   <div class="divider"></div>
-  <span class="title">OneClick</span><span class="brand-sub">setup</span>
+  <span class="title">OneClick</span>{% if version %}<span class="version-pill" title="OneClick UI version — bumps when you click Update and pick up a new build">v{{ version }}</span>{% endif %}<span class="brand-sub">setup</span>
   <nav class="topnav">
     <a href="/">Collector</a>
     <a href="/logs">Logs</a>
@@ -2317,7 +2316,6 @@ details pre{margin:10px 0 0;padding:12px;background:#0f1117;color:#e2e8f0;border
       <span class="ri-dot"></span>
       <span class="ri-text">Running: <strong id="ri-tc">…</strong></span>
     </a>
-    {% if version %}<span class="version-pill" title="OneClick UI version — bumps when you click Update and pick up a new build">v{{ version }}</span>{% endif %}
     <button type="button" class="update-btn" id="update-btn" onclick="runUpdate()"
             title="Fetch the latest OneClick from GitHub and re-install. Service restarts automatically.">
       <span class="update-icon" id="update-icon">⤓</span>
@@ -2763,7 +2761,7 @@ body{margin:0;font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Rob
 .topnav a:hover{background:rgba(255,255,255,.06);color:#fff}
 .topnav a.active{background:var(--brand);color:#fff}
 .topbar .pill{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:11px;background:#0f0f1a;border:1px solid #3a3a55;padding:2px 8px;border-radius:4px;color:#cbd5e1}
-.version-pill{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:10.5px;font-weight:600;color:#cbd5e1;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);padding:2px 7px;border-radius:4px;letter-spacing:.02em;line-height:1.4}
+.version-pill{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:10.5px;font-weight:600;color:#cbd5e1;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);padding:2px 7px;border-radius:4px;letter-spacing:.02em;line-height:1.4;margin-left:8px}
 .update-btn{display:inline-flex;align-items:center;gap:5px;background:rgba(34,197,94,.18);border:1px solid rgba(34,197,94,.5);color:#dcfce7;font:500 11.5px ui-sans-serif,sans-serif;padding:4px 10px;border-radius:6px;cursor:pointer;transition:background .15s}
 .update-btn:hover{background:rgba(34,197,94,.32);color:#fff}
 .update-btn:disabled{cursor:wait;opacity:.7}
@@ -2906,7 +2904,7 @@ pre.dark .info{color:#60a5fa}
 <header class="topbar">
   <img class="logo" src="/static/logo.svg" alt="Simnovus">
   <div class="divider"></div>
-  <span class="title">OneClick</span>
+  <span class="title">OneClick</span>{% if version %}<span class="version-pill" title="OneClick UI version — bumps when you click Update and pick up a new build">v{{ version }}</span>{% endif %}
   <nav class="topnav">
     <a href="/">Collector</a>
     <a href="/logs" class="active">Logs</a>
@@ -2917,7 +2915,6 @@ pre.dark .info{color:#60a5fa}
       <span class="ri-dot"></span>
       <span class="ri-text">Running: <strong id="ri-tc">…</strong></span>
     </a>
-    {% if version %}<span class="version-pill" title="OneClick UI version — bumps when you click Update and pick up a new build">v{{ version }}</span>{% endif %}
     <button type="button" class="update-btn" id="update-btn" onclick="runUpdate()"
             title="Fetch the latest OneClick from GitHub and re-install. Service restarts automatically.">
       <span class="update-icon" id="update-icon">⤓</span>

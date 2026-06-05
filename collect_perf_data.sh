@@ -55,8 +55,12 @@ source "$CONF"
 # executed testcase from the GUI's footer endpoint.
 : "${TEST_CASE_NAME:=LAST_RUN}"
 
-# Defaults for anything the conf might omit
-: "${OUTPUT_DIR:=/tmp/perf_collect}"
+# Defaults for anything the conf might omit. Bundle dir matches the Flask UI's
+# BUNDLE_ROOT (= /var/lib/perf-qa/bundles) so a missing/blank OUTPUT_DIR in
+# setup.conf still produces a bundle the UI can find. Pre-v1.0.4 this defaulted
+# to /tmp/perf_collect, causing "Report FAIL — No bundle produced" even though
+# the bundle was written successfully (just to the wrong place).
+: "${OUTPUT_DIR:=/var/lib/perf-qa/bundles}"
 : "${COLLECTION_LABEL:=perftest}"
 : "${COLLECT_UE:=1}"; : "${COLLECT_SIMNOVATOR:=1}"
 : "${COLLECT_CALLBOX:=1}"; : "${COLLECT_APP_SERVER:=1}"; : "${COLLECT_REST_API:=1}"
