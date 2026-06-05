@@ -1,0 +1,105 @@
+# =============================================================================
+# setup.conf  --  input for collect_perf_data.sh
+#
+# Copy to setup.conf and fill in the placeholders for your rack.
+#
+# Conventions:
+#   - Anything that says <something> below MUST be filled in.
+#   - Blank value or pointing at a missing path is skipped (not an error).
+#   - SECRETS use ${VAR:-default} so they can be overridden by env without
+#     editing this file.  Example:   export CALLBOX_PASS=...; ...
+# =============================================================================
+
+# ---- Test case -------------------------------------------------------------
+# REST pulls are scoped to ONE execution (iterationId). Resolution order:
+#   1. ITERATION_ID set            -> use it directly
+#   2. TEST_CASE_NAME="LAST_RUN"   -> auto-discover via footer endpoint
+#      or TEST_CASE_NAME=""           (same as LAST_RUN)
+#   3. TEST_CASE_NAME="<name>"     -> look up by name, take latest run
+TEST_CASE_NAME="LAST_RUN"               # "" or "LAST_RUN" => last-executed testcase
+ITERATION_ID=""                         # optional: pin to a specific run UUID
+
+# ---- Output ----------------------------------------------------------------
+OUTPUT_DIR="/var/lib/perf-qa/bundles"
+COLLECTION_LABEL="perfqa"
+
+# ---- What to collect (1 = yes, 0 = no) -------------------------------------
+COLLECT_UE=1
+COLLECT_SIMNOVATOR=1
+COLLECT_CALLBOX=1
+COLLECT_APP_SERVER=1
+COLLECT_REST_API=1
+COLLECT_HEAT=1
+COLLECT_IPERF=1
+COLLECT_ANALYZE=1
+
+# ---- UE side --------------------------------------------------------------
+# Set UE_HOST to SSH out from this collector to the UE-sim box. Leave blank
+# if the collector script itself runs ON the UE host.
+UE_HOST=""                              # e.g. 10.0.0.34
+UE_USER=""                              # e.g. sysadmin
+UE_SSH_PORT="22"
+UE_PASS=""                              # blank = SSH key auth
+UE_CFG_PATH="/root/ue/config/ue.cfg"
+WORKLOAD_AFFINITY_JSON=""               # e.g. /home/<user>/UE-simnovus/workload_affinity.json
+NUMA_CONFIG_PATH=""
+UESIM_LOG_DIR="/var/log/lte /root/ue"   # space-separated dirs are supported
+UESIM_LOG_MAX_MB=200
+PERF_PROC_NAMES="app-manager lteue iperf3"
+
+# ---- iperf logs (collected from the UE host after the REST section) -------
+IPERF_LOG_DIR="/root/simnovator-app-manager/web/iperf/logs"
+IPERF_MAX_SUBDIRS=10
+
+# ---- Simnovator host ------------------------------------------------------
+# Containers run rootless under podman as the configured SSH user.
+SIMNOVATOR_HOST=""                      # e.g. 10.0.0.95
+SIMNOVATOR_USER=""                      # e.g. sysadmin
+SIMNOVATOR_SSH_PORT="22"
+SIMNOVATOR_PASS=""                      # blank = SSH key auth
+CONTAINER_ENGINE=""                     # "" auto-detect (prefers podman)
+SIMNOVATOR_CONTAINERS=""                # blank = all running containers
+DOCKER_LOG_TAIL=20000
+
+# ---- Beszel container monitoring ------------------------------------------
+# Optional. Provide a read-only viewer account. Leave BESZEL_HUB_URL blank
+# to skip Beszel screenshots entirely.
+BESZEL_HUB_URL=""                       # e.g. http://10.0.0.16:8090
+BESZEL_USER="${BESZEL_USER:-}"
+BESZEL_PASS="${BESZEL_PASS:-}"
+BESZEL_CHART_RANGE="1h"                 # 1h | 12h | 24h | 1w | 30d
+BESZEL_PYTHON="/opt/perf-qa-ui/venv/bin/python"   # venv with playwright
+BESZEL_SCREENSHOT_SCRIPT=""             # blank => auto-discover next to collect_perf_data.sh
+BESZEL_EXPORT_CMD=""                    # optional CLI fallback (deprecated)
+
+# ---- Simnovator REST API --------------------------------------------------
+# Used to discover the running testcase, pull statistics + logs export ZIP
+# + import-ready testcase JSON.
+SIM_API_BASE=""                         # e.g. http://10.0.0.95
+SIM_API_USER=""                         # Simnovator GUI/API admin
+SIM_API_PASS="${SIM_API_PASS:-}"
+SIM_API_LOGIN_PATH="/v2/login"
+SIM_API_STATS_BUDGET="1000"
+# GUI screenshots (Global / Cell / UE Statistics + Logs).
+SIM_PYTHON=""                           # blank => use BESZEL_PYTHON
+SIM_SCREENSHOT_PAGES="global,cell,ue,logs,health-check"
+SIM_TESTCASE_STATUS="Completed"         # part of GUI URLs
+
+# ---- Callbox --------------------------------------------------------------
+# Amarisoft callboxes typically use password auth; install sshpass on this
+# host so the collector can drive ssh. Leave CALLBOX_HOST blank to skip.
+ENB_CFG_PATH="/root/enb/config/enb.cfg"
+MME_CFG_PATH="/root/mme/config/mme.cfg"
+IMS_CFG_PATH="/root/mme/config/ims.cfg"
+CALLBOX_HOST=""                         # e.g. 10.0.0.107
+CALLBOX_USER=""                         # e.g. sysadmin
+CALLBOX_SSH_PORT="22"
+CALLBOX_PASS="${CALLBOX_PASS:-}"
+AMARISOFT_WS_CMD=""                     # blank => auto via ws.js
+
+# ---- App server -----------------------------------------------------------
+APP_SERVER_HOST=""                      # e.g. 10.0.0.109 (blank = skip)
+APP_SERVER_USER=""                      # e.g. sysadmin
+APP_SERVER_SSH_PORT="22"
+APP_SERVER_PASS=""                      # blank = SSH key auth
+IPERF_TARGET=""                         # optional host:port reachability check
