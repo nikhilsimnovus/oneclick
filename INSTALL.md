@@ -1,4 +1,4 @@
-# perf-qa — install at a customer site
+# OneClick — install at a customer site
 
 One-click diagnostics collector for a Simnovator perf-test run. SSHes to the rack hosts (UE / Simnovator / Callbox / app-server), time-windows everything to the resolved test iteration, packages a `<testcase>_diagnostics_<TS>.zip`, and auto-generates `ANALYSIS.md` + `SYSTEM.md`. Ships a Flask UI on port **8080**.
 
