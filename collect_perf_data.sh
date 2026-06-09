@@ -1101,66 +1101,75 @@ if [[ "$COLLECT_SIMNOVATOR" == "1" && -n "${SIMNOVATOR_HOST:-}" && -f "${BUNDLE}
             rel="${SIM_APP_LOGS[$key]}"
             fname="$(basename "$rel")"
             mkdir -p "${BUNDLE}/simnovator/container_files/${key}"
+            # `|| true` so a missing file doesn't hard-FAIL: on the quadlet
+            # release several services log only to stdout (captured in journal/)
+            # and no longer write this app-log FILE. We downgrade those to a
+            # NOTE after the fact instead of reddening the pipeline.
             sim_podman "simnovator/container_files/${key}/${fname}" \
                 "simnovator: app log ${key}:${rel}" \
-                exec "$actual" sh -c "tail -n ${DOCKER_LOG_TAIL:-20000} '${rel}' 2>&1"
+                exec "$actual" sh -c "tail -n ${DOCKER_LOG_TAIL:-20000} '${rel}' 2>&1 || true"
+            af="${BUNDLE}/simnovator/container_files/${key}/${fname}"
+            if [[ -f "$af" ]] && grep -qiE 'no such file or directory|cannot open' "$af" 2>/dev/null; then
+                rm -f "$af"
+                mark NOTE "simnovator: app log ${key} file absent on this release — stdout captured in journal/${key}.journal.log"
+            fi
         done
 
-        # ----- 6c) systemd journal per quadlet unit ---------------------------
-        # Quadlet-managed containers carry the label PODMAN_SYSTEMD_UNIT=<unit>.
-        # On quadlet hosts the journal is the AUTHORITATIVE log: it survives
+        # ----- 6c) systemd journal per container ------------------------------
+        # On the quadlet (5.x) release each service runs as a rootless podman
+        # container whose stdout is routed to journald tagged CONTAINER_NAME=
+        # <name>.  NOTE: `journalctl -u <unit>` is EMPTY for rootless user units
+        # under a plain (system) journalctl, so we query by CONTAINER_NAME —
+        # which returns the logs and needs no sudo (verified on the .91 rack).
+        # The journal is the authoritative source on quadlet hosts: it survives
         # container restarts (podman logs only has the current instance) and
-        # records health-check failures + dependency ordering ("waiting for
-        # keycloak") that podman stdout never shows. One remote script loops
-        # over the containers, so there's a single round-trip and no per-name
-        # quoting. Auto-detecting: on pre-quadlet hosts no container has the
-        # label, so it writes a clear sentinel instead of failing.
+        # records the conmon health/restart events podman stdout never shows.
+        # Windowed to the test/lookback window. Per-container files mirror the
+        # container_files/ layout so the analyzer can attribute errors.
+        # Pre-quadlet hosts (json-file log driver) return "-- No entries --" and
+        # the file is dropped, so they cost nothing.
         if [[ -n "${START:-}" && "$START" != "0" ]]; then
             jwin="--since @${START} --until @${END:-$(date +%s)}"
         else
             jwin="-n ${DOCKER_LOG_TAIL:-20000}"
         fi
-        _pj="${PODMAN_BIN:-podman}"
         mkdir -p "${BUNDLE}/simnovator/journal"
-        journal_script=$(cat <<EOF
-#!/bin/bash
-set +e
-PODMAN=${_pj}
-names=\$(\$PODMAN ps --format '{{.Names}}' 2>/dev/null)
-any=0
-for c in \$names; do
-    u=\$(\$PODMAN inspect "\$c" --format '{{index .Config.Labels "PODMAN_SYSTEMD_UNIT"}}' 2>/dev/null)
-    [ -z "\$u" ] && continue
-    any=1
-    echo "==================== \$c  (unit=\$u) ===================="
-    sudo -n journalctl -u "\$u" ${jwin} --no-pager 2>&1 || journalctl -u "\$u" ${jwin} --no-pager 2>&1
-    echo
-done
-[ "\$any" = "0" ] && echo "(no containers carry PODMAN_SYSTEMD_UNIT — host is not quadlet/systemd-managed; podman logs above already cover stdout)"
-EOF
-)
-        log "--- Simnovator systemd journal (quadlet units, window: ${jwin}) ---"
-        remote_script_pipe "${SIMNOVATOR_HOST}" "${SIMNOVATOR_USER:-sysadmin}" "${SIMNOVATOR_SSH_PORT:-22}" \
-            "simnovator/journal/units.journal.log" "simnovator: systemd journal (quadlet units)" \
-            "${SIMNOVATOR_PASS:-}" "$journal_script"
+        log "--- Simnovator systemd journal per container (window: ${jwin}) ---"
+        for c in $clist; do
+            lc="$(sim_logical_name "$c")"
+            # Drop the benign "Journal file ... corrupted, ignoring file" notice
+            # journald emits when one rotated user-journal is unreadable.
+            jcmd="journalctl CONTAINER_NAME='${c}' ${jwin} --no-pager 2>&1 | grep -v 'corrupted, ignoring file' || true"
+            sim_run "simnovator/journal/${lc}.journal.log" "simnovator: journal ${lc}" "$jcmd"
+            # Drop files with no real log lines (empty / "-- No entries --" /
+            # "-- Journal begins" only) — same hygiene as the 0-byte podman logs.
+            jf="${BUNDLE}/simnovator/journal/${lc}.journal.log"
+            if [[ -f "$jf" ]] && ! grep -qvE '^[[:space:]]*$|-- No entries --|-- Journal begins|-- Boot' "$jf" 2>/dev/null; then
+                rm -f "$jf"
+                mark NOTE "simnovator: journal ${lc} empty in window — dropped"
+            fi
+        done
 
-        # ----- 6d) native `simnovator logs` bundle ----------------------------
-        # Today's release ships a built-in time-windowed log bundler
-        # (`sudo simnovator logs ...` -> <window>-logs.tar). Best-effort:
-        #   1. record the CLI presence/version + `logs --help` (always, cheap —
-        #      this captures the exact supported syntax into the bundle)
-        #   2. if present (and not disabled via SIM_NATIVE_LOGS=0), attempt one
-        #      windowed export and pull the tar back binary-safe.
-        # The window is derived from the resolved test/lookback window so we
-        # never trigger the CLI's 72h default. Absent CLI => clean NOTE.
+        # ----- 6d) native `simnovator logs` archive ---------------------------
+        # The 5.x release ships a built-in log bundler. Confirmed real syntax
+        # (on the .91/.95/.202 racks):
+        #     sudo simnovator logs <since>
+        #   where <since> is a duration (30m / 2h / 60s) or a date (YYYY-MM-DD),
+        #   default 72h. It prints "Logs successfully archived to: <path>" and
+        #   writes /home/simnovus/simnovator-<since>-logs.tar.gz. We:
+        #     1. record CLI presence + `simnovator help` (captures live syntax),
+        #     2. run it for OUR window (minutes, so never the 72h default),
+        #        parse the archived path from its output, stream the .tar.gz
+        #        back binary-safe, then remove it from /home/simnovus.
+        # Best-effort: absent CLI / disabled => NOTE, never FAILED.
         mkdir -p "${BUNDLE}/simnovator/native_logs"
         sim_run "simnovator/native_logs/cli.txt" "simnovator: native CLI presence" \
-            "command -v simnovator >/dev/null 2>&1 && { echo present; simnovator --version 2>&1 | head -3; } || echo 'absent (pre-quadlet release)'"
-        sim_run "simnovator/native_logs/logs_help.txt" "simnovator: 'simnovator logs' help" \
-            "simnovator logs --help 2>&1 || simnovator help logs 2>&1 || simnovator logs -h 2>&1 || echo '(no help available / CLI absent)'"
+            "command -v simnovator >/dev/null 2>&1 && echo present || echo 'absent (pre-quadlet release)'"
+        sim_run "simnovator/native_logs/logs_help.txt" "simnovator: 'simnovator' help (live syntax)" \
+            "sudo -n simnovator help 2>&1 || simnovator help 2>&1 || simnovator logs --help 2>&1 || echo '(no help available / CLI absent)'"
 
         if [[ "${SIM_NATIVE_LOGS:-auto}" == "0" ]]; then
-            mark NOTE "simnovator: native-logs tar disabled (SIM_NATIVE_LOGS=0)"
+            mark NOTE "simnovator: native-logs archive disabled (SIM_NATIVE_LOGS=0)"
         elif grep -qi 'absent' "${BUNDLE}/simnovator/native_logs/cli.txt" 2>/dev/null; then
             mark NOTE "simnovator: native 'simnovator logs' CLI not present (pre-quadlet release) — podman+journal already captured"
         else
@@ -1174,17 +1183,18 @@ EOF
                 nl_mins=60
             fi
             (( nl_mins < 1 )) && nl_mins=1
-            nl_iso_s="$(date -u -d "@${START:-$(( $(date +%s) - nl_mins * 60 ))}" +%FT%TZ 2>/dev/null)"
-            nl_iso_e="$(date -u -d "@${END:-$(date +%s)}" +%FT%TZ 2>/dev/null)"
-            # Remote: run the CLI in a temp dir trying a couple of likely
-            # syntax forms (sudo -n, each timeout-bounded), then cat the newest
-            # produced *-logs.tar to stdout (binary-safe via remote_pipe).
-            # ISO values have no spaces, so they word-split cleanly when $f is
-            # expanded unquoted on the remote side (don't single-quote them —
-            # quotes inside a var aren't re-evaluated, they'd pass literally).
-            nl_cmd="td=\$(mktemp -d 2>/dev/null) || exit 0; cd \"\$td\" || exit 0; for f in \"--minutes ${nl_mins}\" \"--since ${nl_iso_s} --until ${nl_iso_e}\"; do timeout 120 sudo -n simnovator logs \$f >/dev/null 2>&1 && break; done; t=\$(ls -1t *logs.tar 2>/dev/null | head -1); if [ -n \"\$t\" ]; then cat \"\$t\"; fi; cd /; rm -rf \"\$td\""
-            nl_out="simnovator/native_logs/simnovator_${nl_mins}m-logs.tar"
-            sim_pipe_best_effort "$nl_out" "simnovator: native logs tar (last ${nl_mins}m)" "$nl_cmd"
+            nl_dur="${nl_mins}m"
+            # Remote: run `sudo simnovator logs <dur>`, parse the "archived to:"
+            # path it prints (fall back to newest /home/simnovus/*logs*.tar.gz),
+            # cat the archive to stdout (binary-safe via sim_pipe_best_effort),
+            # then delete it so /home/simnovus doesn't accumulate our test runs.
+            # NOTE: the archive lands in root-owned /home/simnovus, which the
+            # SSH user can't traverse — so every existence test must go through
+            # `sudo -n test -f` (a plain [ -f ] returns false even though the
+            # file is there). cat/rm likewise need sudo.
+            nl_cmd="out=\$(timeout 180 sudo -n simnovator logs ${nl_dur} 2>&1); p=\$(printf '%s\n' \"\$out\" | sed -n 's/.*archived to:[[:space:]]*//p' | tail -1); if [ -z \"\$p\" ] || ! sudo -n test -f \"\$p\"; then p=\$(sudo -n find /home/simnovus -maxdepth 2 -name 'simnovator-*logs*.tar.gz' -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-); fi; if [ -n \"\$p\" ] && sudo -n test -f \"\$p\"; then sudo -n cat \"\$p\"; sudo -n rm -f \"\$p\"; fi"
+            nl_out="simnovator/native_logs/simnovator-${nl_dur}-logs.tar.gz"
+            sim_pipe_best_effort "$nl_out" "simnovator: native logs archive (last ${nl_dur})" "$nl_cmd"
         fi
     fi
 fi

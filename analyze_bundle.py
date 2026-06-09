@@ -324,12 +324,29 @@ def analyze_containers(bundle: Path) -> dict | None:
                 if n > d["top_crit_count"]:
                     d["top_crit_msg"], d["top_crit_count"] = msg, n
 
-    # 1) Stdout logs (windowed) — one file per container at container_logs/<c>.log
+    # 1) systemd journal per container (quadlet 5.x hosts) — authoritative
+    #    stdout. Scanned FIRST so we can skip the podman-logs copy of the same
+    #    stdout below: on the quadlet release journald IS podman logs' backing
+    #    store, so container_logs/<c>.log would otherwise double-count the same
+    #    lines. File is "<container>.journal.log".
+    journal_dir = bundle / "simnovator" / "journal"
+    journaled: set[str] = set()
+    if journal_dir.is_dir():
+        for log in sorted(journal_dir.glob("*.journal.log")):
+            name = log.name[: -len(".journal.log")]
+            journaled.add(name)
+            _scan(log, name, f"journal/{log.name}")
+
+    # 2) Stdout logs (windowed) — container_logs/<c>.log. Skip any container
+    #    already covered by its journal (same stdout source -> no double count).
     if logs_dir.is_dir():
         for log in sorted(logs_dir.glob("*.log")):
+            if log.stem in journaled:
+                continue
             _scan(log, log.stem, f"container_logs/{log.name}")
 
-    # 2) In-container app log files — container_files/<c>/<file>.log
+    # 3) In-container app log files — container_files/<c>/<file>.log. Distinct
+    #    content (the services' own log FILES, not stdout) — always scanned.
     if files_dir.is_dir():
         for sub in sorted(p for p in files_dir.iterdir() if p.is_dir()):
             for log in sorted(sub.glob("*.log")):
