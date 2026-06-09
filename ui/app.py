@@ -17,6 +17,7 @@ import glob
 import json
 import os
 import re
+import sys
 import subprocess
 import threading
 import time
@@ -29,7 +30,7 @@ from flask import Flask, abort, jsonify, redirect, render_template_string, reque
 # OneClick UI version. Bump on every push to oneclick repo so customers
 # can confirm the Update button actually applied — the new number shows
 # up in the topbar after the page reloads.
-VERSION = "1.0.7"
+VERSION = "1.0.8"
 
 SCRIPT_DIR = Path(os.environ.get("PERFQA_SCRIPT_DIR", "/opt/perf-qa"))
 SCRIPT = SCRIPT_DIR / "collect_perf_data.sh"
@@ -523,6 +524,21 @@ def _write_setup_from_profile(profile_name: str, form: dict) -> tuple[bool, str]
     # Test case overrides (always editable in the form).
     out["TEST_CASE_NAME"] = (form.get("TEST_CASE_NAME") or "LAST_RUN").strip() or "LAST_RUN"
     out["ITERATION_ID"]   = (form.get("ITERATION_ID") or "").strip()
+
+    # Force OUTPUT_DIR to the dir the UI actually scans for bundles. Older
+    # profiles (migrated from pre-v1.0.4 installs) carry a stale OUTPUT_DIR
+    # like /tmp/perf_collect — the collection then succeeds but writes where
+    # the UI can't see it, surfacing as "Report FAIL — no bundle produced".
+    # The collector host has exactly one bundle root, so pin it here.
+    out["OUTPUT_DIR"] = str(BUNDLE_ROOT)
+
+    # Pin the Python used for analyze / SYSTEM.md / screenshots to the venv
+    # running THIS app — guaranteed to exist, be 3.10+, and be executable by
+    # the service user. Migrated profiles can carry a stale BESZEL_PYTHON path
+    # (e.g. an old dev venv under /home) that the perfqa user can't execute,
+    # which otherwise fails the analyze + SYSTEM.md steps. ANALYZE_PYTHON falls
+    # back to BESZEL_PYTHON in the collector, so this one value covers all.
+    out["BESZEL_PYTHON"] = sys.executable
 
     # Write a brand-new setup.conf — much smaller and more readable than the
     # giant template, with a marker at the top showing the profile.
