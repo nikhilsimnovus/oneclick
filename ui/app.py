@@ -29,7 +29,7 @@ from flask import Flask, abort, jsonify, redirect, render_template_string, reque
 # OneClick UI version. Bump on every push to oneclick repo so customers
 # can confirm the Update button actually applied — the new number shows
 # up in the topbar after the page reloads.
-VERSION = "1.0.4"
+VERSION = "1.0.5"
 
 SCRIPT_DIR = Path(os.environ.get("PERFQA_SCRIPT_DIR", "/opt/perf-qa"))
 SCRIPT = SCRIPT_DIR / "collect_perf_data.sh"
@@ -931,6 +931,18 @@ def run():
         env_overrides = {}
         tcn = (request.form.get("test_case_name") or "").strip()
         iter_id = (request.form.get("iteration_id") or "").strip()
+        # Lookback-mode disables the testcase/iteration inputs in the UI, so
+        # only one of these branches actually fires per submission.
+        lookback_raw = (request.form.get("lookback_minutes") or "").strip()
+        if lookback_raw:
+            try:
+                mins = int(lookback_raw)
+                if 1 <= mins <= 1440:
+                    env_overrides["LOOKBACK_MINUTES"] = str(mins)
+                else:
+                    return jsonify({"error": f"lookback_minutes out of range (1..1440): {mins}"}), 400
+            except ValueError:
+                return jsonify({"error": f"lookback_minutes not an integer: {lookback_raw!r}"}), 400
         if tcn:
             env_overrides["TEST_CASE_NAME"] = tcn
         if iter_id:
@@ -942,13 +954,19 @@ def run():
             if field in request.form:
                 checked = request.form.get(field) == "on"
                 env_overrides[f"COLLECT_{section}"] = "1" if checked else "0"
+        # Label the running job in the topbar. Lookback mode wins over tcn
+        # since LOOKBACK_MINUTES is what the script will actually use.
+        if "LOOKBACK_MINUTES" in env_overrides:
+            job_label = f"lookback_{env_overrides['LOOKBACK_MINUTES']}m"
+        else:
+            job_label = tcn or "LAST_RUN"
         JOBS[job_id] = {
             "state": "running",
             "lines": deque(maxlen=5000),
             "started": time.time(),
             "env": env_overrides,
             "profile": profile_name,
-            "test_case": tcn or "LAST_RUN",
+            "test_case": job_label,
         }
     threading.Thread(target=_run_job, args=(job_id, env_overrides), daemon=True).start()
     return jsonify({"job_id": job_id, "profile": profile_name})
@@ -1506,6 +1524,20 @@ select{font-weight:500;cursor:pointer}
 .btn:active{transform:translateY(1px)}
 .btn:disabled{background:#cbd5e1;color:#fff;cursor:not-allowed}
 
+/* Mode tabs (test-case vs time-window) */
+.mode-tabs{display:flex;gap:0;margin-top:6px;margin-bottom:10px;background:#f1f5f9;padding:3px;border-radius:7px;border:1px solid var(--bd)}
+.mode-tab{flex:1;background:transparent;color:var(--mut);border:0;padding:7px 10px;font-size:12.5px;font-weight:600;cursor:pointer;border-radius:5px;transition:background .12s,color .12s}
+.mode-tab:hover{color:var(--fg)}
+.mode-tab.active{background:#fff;color:var(--brand);box-shadow:0 1px 3px rgba(15,23,42,.08)}
+.mode-panel input[type=number]{width:100%;padding:8px 11px;border:1px solid var(--bd);border-radius:5px;font-size:13.5px;background:#fff}
+.mode-panel input[type=number]:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px rgba(249,115,22,.12)}
+
+/* Preset chips for lookback duration */
+.chip-row{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.chip{background:#fff;color:var(--fg);border:1px solid var(--bd);border-radius:14px;padding:5px 12px;font-size:12px;font-weight:500;cursor:pointer;transition:all .12s}
+.chip:hover{border-color:var(--brand);color:var(--brand)}
+.chip.active{background:var(--brand);color:#fff;border-color:var(--brand)}
+
 .notice{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;padding:9px 12px;border-radius:6px;font-size:12.5px;margin-bottom:10px;line-height:1.45}
 .notice code{background:#fff;padding:1px 5px;border-radius:3px;font-size:11.5px;border:1px solid #fed7aa}
 
@@ -1693,11 +1725,33 @@ small{color:var(--mut);font-weight:400}
         {% endfor %}
       </select>
 
-      <label for="test_case_name">Test case name <small>(blank = LAST_RUN; type or pick from list)</small></label>
-      <input type="text" id="test_case_name" name="test_case_name" placeholder="LAST_RUN" list="tc-list" autocomplete="off">
-      <datalist id="tc-list"></datalist>
-      <label for="iteration_id">Iteration ID <small>(optional override)</small></label>
-      <input type="text" id="iteration_id" name="iteration_id" placeholder="019e6f99-...">
+      <label>Mode <small>(what time window to collect)</small></label>
+      <div class="mode-tabs" role="tablist">
+        <button type="button" class="mode-tab active" data-mode="testcase" onclick="setMode('testcase')">By test case</button>
+        <button type="button" class="mode-tab" data-mode="lookback" onclick="setMode('lookback')">Last N minutes</button>
+      </div>
+
+      <div id="mode-testcase" class="mode-panel">
+        <label for="test_case_name">Test case name <small>(blank = LAST_RUN; type or pick from list)</small></label>
+        <input type="text" id="test_case_name" name="test_case_name" placeholder="LAST_RUN" list="tc-list" autocomplete="off">
+        <datalist id="tc-list"></datalist>
+        <label for="iteration_id">Iteration ID <small>(optional override)</small></label>
+        <input type="text" id="iteration_id" name="iteration_id" placeholder="019e6f99-...">
+      </div>
+
+      <div id="mode-lookback" class="mode-panel" style="display:none">
+        <label>Window <small>(ad-hoc — no testcase, just the last N minutes)</small></label>
+        <div class="chip-row">
+          <button type="button" class="chip" data-mins="15" onclick="setLookback(15)">15 min</button>
+          <button type="button" class="chip" data-mins="30" onclick="setLookback(30)">30 min</button>
+          <button type="button" class="chip active" data-mins="60" onclick="setLookback(60)">1 hr</button>
+          <button type="button" class="chip" data-mins="120" onclick="setLookback(120)">2 hr</button>
+          <button type="button" class="chip" data-mins="240" onclick="setLookback(240)">4 hr</button>
+        </div>
+        <label for="lookback_minutes" style="margin-top:10px">Custom (minutes)</label>
+        <input type="number" id="lookback_minutes" name="lookback_minutes" min="1" max="1440" value="60" oninput="onLookbackInput()">
+        <small style="display:block;margin-top:4px;color:var(--mut)">REST per-iteration stats + GUI screenshots are skipped in this mode (no testcase to anchor against). Container logs, iperf, heat CSVs, and system snapshots are windowed to the selected range.</small>
+      </div>
       <label>Sections <small>(auto-filled from profile; uncheck to skip ad-hoc)</small></label>
       <div class="sections">
         <label data-host="UE_HOST">          <input type="checkbox" name="collect_ue"        > UE</label>
@@ -1826,6 +1880,39 @@ async function refreshTestcaseDatalist(profileName){
   const sel = $('#_profile');
   if (cached && [...sel.options].some(o => o.value === cached)) sel.value = cached;
   onProfileChange();
+})();
+
+// ----- Mode toggle (test case vs lookback window) -------------------------
+// Disabled inputs are NOT included in FormData, so backend gets a clean view
+// of which mode the user picked — no need for an extra "_mode" hidden field.
+function setMode(mode){
+  document.querySelectorAll('.mode-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.mode === mode));
+  const tcPanel = document.getElementById('mode-testcase');
+  const lbPanel = document.getElementById('mode-lookback');
+  const isLookback = mode === 'lookback';
+  tcPanel.style.display = isLookback ? 'none' : '';
+  lbPanel.style.display = isLookback ? '' : 'none';
+  // Toggle disabled so only the active mode's fields post.
+  document.getElementById('test_case_name').disabled = isLookback;
+  document.getElementById('iteration_id').disabled   = isLookback;
+  document.getElementById('lookback_minutes').disabled = !isLookback;
+  localStorage.setItem('perfqa.mode', mode);
+}
+function setLookback(mins){
+  document.querySelectorAll('.chip').forEach(c =>
+    c.classList.toggle('active', String(c.dataset.mins) === String(mins)));
+  document.getElementById('lookback_minutes').value = mins;
+}
+function onLookbackInput(){
+  // User typed a custom value — clear the active chip unless it exactly matches.
+  const v = document.getElementById('lookback_minutes').value;
+  document.querySelectorAll('.chip').forEach(c =>
+    c.classList.toggle('active', String(c.dataset.mins) === String(v)));
+}
+(function initMode(){
+  const cached = localStorage.getItem('perfqa.mode') || 'testcase';
+  setMode(cached);
 })();
 
 // Map of label-prefix => UI section id. The script's mark() lines look like

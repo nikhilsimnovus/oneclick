@@ -55,6 +55,27 @@ source "$CONF"
 # executed testcase from the GUI's footer endpoint.
 : "${TEST_CASE_NAME:=LAST_RUN}"
 
+# ---------------------------------------------------------------------------
+# Ad-hoc time-window mode
+#   If LOOKBACK_MINUTES is set (positive integer), skip REST iter resolution
+#   and just collect everything from now-N minutes through now. Useful when
+#   there's no specific test case to anchor against — e.g. "something just
+#   went sideways, grab the last hour". The REST block sees START/END already
+#   populated and skips its own resolution; container/iperf logs use this
+#   window for --since/--until slicing. TEST_CASE_NAME becomes "lookback_<N>m"
+#   so the bundle is obvious in the Logs tab.
+# ---------------------------------------------------------------------------
+LOOKBACK_MINUTES="${LOOKBACK_MINUTES:-}"
+if [[ -n "$LOOKBACK_MINUTES" && "$LOOKBACK_MINUTES" =~ ^[0-9]+$ && "$LOOKBACK_MINUTES" -gt 0 ]]; then
+    END="$(date +%s)"
+    START="$((END - LOOKBACK_MINUTES * 60))"
+    TEST_CASE_NAME="lookback_${LOOKBACK_MINUTES}m"
+    LOOKBACK_ACTIVE=1
+    echo "[setup] LOOKBACK mode: last ${LOOKBACK_MINUTES} min (START=${START} END=${END})" >&2
+else
+    LOOKBACK_ACTIVE=0
+fi
+
 # Defaults for anything the conf might omit. Bundle dir matches the Flask UI's
 # BUNDLE_ROOT (= /var/lib/perf-qa/bundles) so a missing/blank OUTPUT_DIR in
 # setup.conf still produces a bundle the UI can find. Pre-v1.0.4 this defaulted
@@ -79,6 +100,18 @@ BUNDLE="${OUTPUT_DIR}/.pending_${TS}"
 LOG="${BUNDLE}/collect.log"
 MANIFEST="${BUNDLE}/MANIFEST.txt"
 mkdir -p "$BUNDLE"
+
+# Stamp the manifest header for LOOKBACK mode now (REST block won't run its
+# usual header since there's no resolved iter). For test-case mode, the REST
+# block writes its own header once it knows the iter.
+if [[ "${LOOKBACK_ACTIVE:-0}" == "1" ]]; then
+    {
+      echo "Mode: LOOKBACK (no test case)"
+      echo "Window: last ${LOOKBACK_MINUTES} min (Unix ${START} - ${END})"
+      echo "Window (ISO): $(date -u -d "@${START}" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) - $(date -u -d "@${END}" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"
+      echo "------------------------------------------------------------"
+    } >> "$MANIFEST"
+fi
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -723,11 +756,19 @@ PYEOF
         fi
 
         # ----- 2) Resolve iterationId + time window ---------------------------
-        # Precedence: explicit ITERATION_ID > TEST_CASE_NAME lookup > footer auto-discover.
+        # Precedence: LOOKBACK mode > explicit ITERATION_ID > TEST_CASE_NAME lookup > footer auto-discover.
+        # In LOOKBACK mode we already set START/END from now-N..now at script
+        # entry, so leave them alone and skip the iter resolution entirely —
+        # there's no testcase to anchor against.
         ITER="${ITERATION_ID:-}"
-        TC_ID=""; TC_NAME="${TEST_CASE_NAME:-}"; START=""; END=""
+        TC_ID=""; TC_NAME="${TEST_CASE_NAME:-}"
+        if [[ "${LOOKBACK_ACTIVE:-0}" != "1" ]]; then
+            START=""; END=""
+        else
+            mark COLLECTED "rest-api: LOOKBACK mode active — window = last ${LOOKBACK_MINUTES} min (${START}..${END}), skipping iter resolution"
+        fi
 
-        if [[ -n "$TOKEN" && -z "$ITER" ]]; then
+        if [[ -n "$TOKEN" && -z "$ITER" && "${LOOKBACK_ACTIVE:-0}" != "1" ]]; then
             if [[ -z "$TC_NAME" || "$TC_NAME" == "LAST_RUN" ]]; then
                 # Same endpoint the GUI's footer LAST RUN TEST widget uses.
                 code=$(curl -sk "${AUTH_HDR[@]}" -o "${API}/last_run.json" -w '%{http_code}' \
