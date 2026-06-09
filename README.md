@@ -54,11 +54,21 @@ The Update flow uses a sudoers-whitelisted wrapper (`/usr/local/sbin/perfqa-upda
 ├── <testcase>.testcase.json   re-importable via POST /v2/testcases/import
 ├── MANIFEST.txt + collect.log
 ├── ue/        system + cpu + net + UESIM logs + iperf logs + heat CSVs
-├── simnovator/ container ps + stats + per-container logs + Beszel screenshot
+├── simnovator/ container ps + stats + health + per-container logs + Beszel screenshot
+│              ├── container_health.txt + systemd_units.txt   (quadlet hosts)
+│              ├── journal/   per-unit systemd journal (windowed; quadlet hosts)
+│              └── native_logs/  `simnovator logs` tar + CLI help (if CLI present)
 ├── callbox/   enb/mme/ims.cfg + sensors + amari monitor + heat CSVs
 ├── app_server/ network info
 └── rest_api/  test definition + statistics + logs export + GUI screenshots
 ```
+
+On hosts running the newer **podman quadlet** stack the collector auto-detects
+systemd-managed containers and additionally captures each unit's systemd journal
+(the authoritative log — survives restarts, records health-check + dependency
+ordering) plus container health status. It degrades cleanly on older
+podman-compose hosts. No configuration needed; `SIM_NATIVE_LOGS=0` opts out of
+the native-CLI tar grab.
 
 ## CLI use
 

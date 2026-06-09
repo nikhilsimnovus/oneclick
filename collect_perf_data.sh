@@ -406,6 +406,63 @@ sim_container_names() {
     fi
 }
 
+# Run an arbitrary shell command on the Simnovator host (remote or local),
+# capturing stdout+stderr to a bundle file. Sibling to sim_podman for the
+# non-podman probes added for quadlet support (systemctl, journalctl, the
+# native `simnovator` CLI).
+sim_run() {  # sim_run <outfile> <label> <shell-cmd>
+    local out="$1" label="$2" cmd="$3"
+    if [[ -n "${SIMNOVATOR_HOST:-}" ]]; then
+        remote_or_local "$SIMNOVATOR_HOST" "${SIMNOVATOR_USER:-sysadmin}" "${SIMNOVATOR_SSH_PORT:-22}" \
+            "$out" "$label" "$cmd" "${SIMNOVATOR_PASS:-}"
+    else
+        bash -c "$cmd" > "${BUNDLE}/${out}" 2>&1 \
+            && mark "COLLECTED" "$label (local) -> ${out}" \
+            || mark "FAILED" "$label (local cmd error)"
+    fi
+}
+
+# Podman quadlets name a container "systemd-<unit>" unless the .container file
+# sets ContainerName= explicitly, so `podman ps` may return either the bare
+# name (podman-compose / explicit) or the systemd-prefixed name (quadlet
+# default). Strip the prefix to get the logical service name used as the key
+# in SIM_APP_LOGS and as the stable bundle path — so the bundle layout is
+# identical on both old and new (quadlet) hosts.
+# Assumes Simnovator's two naming conventions only: pre-quadlet compose names
+# are bare (simnovator-*), quadlet names are systemd-prefixed. Section 6b's
+# matcher tries BOTH forms, so a stripped name still resolves to the right
+# running container regardless.
+sim_logical_name() { echo "${1#systemd-}"; }
+
+# Binary-safe stdout pull from the Simnovator host where MISSING output is a
+# NOTE, not a FAILED. Mirrors remote_pipe's transport but is for best-effort
+# bonus artifacts (the native `simnovator logs` tar) that shouldn't redden the
+# pipeline if engineering's CLI syntax differs from our guess.
+sim_pipe_best_effort() {  # <outfile> <label> <cmd-string>
+    local out="$1" label="$2" cmd="$3"
+    local target="${BUNDLE}/${out}"; mkdir -p "$(dirname "$target")"
+    local host="${SIMNOVATOR_HOST:-}" user="${SIMNOVATOR_USER:-sysadmin}"
+    local port="${SIMNOVATOR_SSH_PORT:-22}" pass="${SIMNOVATOR_PASS:-}" rc
+    if [[ -z "$host" ]]; then
+        bash -c "$cmd" > "$target" 2>>"$LOG"; rc=$?
+    elif [[ -n "$pass" ]] && have sshpass; then
+        sshpass -p "$pass" ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 \
+            -p "$port" "${user}@${host}" "$cmd" > "$target" 2>>"$LOG"; rc=$?
+    elif [[ -z "$pass" ]]; then
+        ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 \
+            -p "$port" "${user}@${host}" "$cmd" > "$target" 2>>"$LOG"; rc=$?
+    else
+        mark NOTE "$label (password set but sshpass not installed)"; return
+    fi
+    if [[ ${rc:-1} -eq 0 && -s "$target" ]]; then
+        local sz; sz=$(stat -c%s "$target" 2>/dev/null || echo 0)
+        mark COLLECTED "$label -> ${out} (${sz} bytes)"
+    else
+        rm -f "$target"
+        mark NOTE "$label — not produced (see native_logs/logs_help.txt for the exact supported syntax)"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 log "=== Performance data collection started ==="
 log "Config:  $CONF"
@@ -553,14 +610,31 @@ elif [[ "$COLLECT_SIMNOVATOR" == "1" ]]; then
         # Live per-container resource snapshot (local proxy for Beszel metrics).
         sim_podman "simnovator/container_stats_snapshot.txt" "simnovator: ${ENGINE} stats snapshot (CPU/mem/net/io)" stats --no-stream
 
+        # Container status + health. With quadlets every service gets a
+        # healthcheck; podman's {{.Status}} shows "Up 5m (healthy|starting|
+        # unhealthy)". This is the fastest way to spot a wedged dependency
+        # (e.g. keycloak stuck "starting" blocking everything downstream).
+        sim_podman "simnovator/container_health.txt" "simnovator: container status/health" \
+            ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.RunningFor}}\t{{.Image}}'
+
+        # systemd unit states — only meaningful once engineering moved to
+        # quadlets (containers run as <unit>.service). Broad grep so we don't
+        # depend on exact unit names; prints a clear sentinel on pre-quadlet
+        # hosts so the bundle records "this host isn't quadlet-managed yet".
+        sim_run "simnovator/systemd_units.txt" "simnovator: systemd unit states (quadlet)" \
+            "systemctl list-units --type=service --all --no-pager 2>/dev/null | grep -iE 'simnovator|keycloak|observe|timescale|redis|valkey|gateway|authenticator|executor|worker|stats|frontend|test-(creator|processor)' || echo '(no matching systemd units — pre-quadlet podman-compose host)'"
+
         # Per-container inspect JSON (point-in-time, no window needed). The
         # actual `logs` dump moves to the post-REST section so we can pass
-        # --since=<test start> and capture only test-window output.
+        # --since=<test start> and capture only test-window output. Bundle
+        # filename uses the logical (de-prefixed) name so it's stable across
+        # host generations; the podman target uses the actual name.
         clist="${SIMNOVATOR_CONTAINERS:-}"
         [[ -z "$clist" ]] && clist="$(sim_container_names "$ENGINE")"
         log "  found $(echo "$clist" | wc -w) container(s); inspecting now, logs deferred to post-REST window"
         for c in $clist; do
-            sim_podman "simnovator/container_logs/${c}.inspect.json" "simnovator: inspect ${c}" \
+            lc="$(sim_logical_name "$c")"
+            sim_podman "simnovator/container_logs/${lc}.inspect.json" "simnovator: inspect ${lc}" \
                 inspect "$c" >/dev/null 2>&1 || true
         done
         # Save list for the windowed log pass.
@@ -982,20 +1056,22 @@ if [[ "$COLLECT_SIMNOVATOR" == "1" && -n "${SIMNOVATOR_HOST:-}" && -f "${BUNDLE}
         )
 
         for c in $clist; do
-            sim_podman "simnovator/container_logs/${c}.log" \
-                "simnovator: container log ${c} (windowed)" $log_args "$c"
+            lc="$(sim_logical_name "$c")"
+            sim_podman "simnovator/container_logs/${lc}.log" \
+                "simnovator: container log ${lc} (windowed)" $log_args "$c"
             # Most Simnovator services route their app logs to *files inside
             # the container* (captured below in container_files/), so podman
             # stdout is often empty for the test window. Drop the 0-byte
             # placeholder + replace COLLECTED with a NOTE pointing at the
             # in-container log file. Keeps the bundle visibly clean — only
             # services that actually emit stdout end up with a .log file.
-            f="${BUNDLE}/simnovator/container_logs/${c}.log"
+            # (Quadlet hosts: the systemd journal in 6c is the fuller source.)
+            f="${BUNDLE}/simnovator/container_logs/${lc}.log"
             if [[ -f "$f" && ! -s "$f" ]]; then
                 rm -f "$f"
                 hint=""
-                [[ -n "${SIM_APP_LOGS[$c]:-}" ]] && hint=" (see container_files/${c}/$(basename "${SIM_APP_LOGS[$c]}"))"
-                mark NOTE "simnovator: container log ${c} empty in window — dropped${hint}"
+                [[ -n "${SIM_APP_LOGS[$lc]:-}" ]] && hint=" (see container_files/${lc}/$(basename "${SIM_APP_LOGS[$lc]}"))"
+                mark NOTE "simnovator: container log ${lc} empty in window — dropped${hint}"
             fi
         done
 
@@ -1010,19 +1086,106 @@ if [[ "$COLLECT_SIMNOVATOR" == "1" && -n "${SIMNOVATOR_HOST:-}" && -f "${BUNDLE}
         # "No such file or directory" landing in the file — informative either way.
         mkdir -p "${BUNDLE}/simnovator/container_files"
         log "--- Simnovator in-container app logs (tail -n ${DOCKER_LOG_TAIL}) ---"
-        for c in "${!SIM_APP_LOGS[@]}"; do
-            # Only grab if the container is actually running.
-            if ! grep -qw "$c" <<<"$clist"; then
-                mark SKIPPED "simnovator: app log ${c} (container not running)"
+        for key in "${!SIM_APP_LOGS[@]}"; do
+            # Resolve the actual running container name: bare (podman-compose /
+            # explicit ContainerName) or systemd-prefixed (quadlet default).
+            # Bundle path stays keyed on the logical name either way.
+            actual=""
+            if   grep -qw "$key"          <<<"$clist"; then actual="$key"
+            elif grep -qw "systemd-$key"  <<<"$clist"; then actual="systemd-$key"
+            fi
+            if [[ -z "$actual" ]]; then
+                mark SKIPPED "simnovator: app log ${key} (container not running)"
                 continue
             fi
-            rel="${SIM_APP_LOGS[$c]}"
+            rel="${SIM_APP_LOGS[$key]}"
             fname="$(basename "$rel")"
-            mkdir -p "${BUNDLE}/simnovator/container_files/${c}"
-            sim_podman "simnovator/container_files/${c}/${fname}" \
-                "simnovator: app log ${c}:${rel}" \
-                exec "$c" sh -c "tail -n ${DOCKER_LOG_TAIL:-20000} '${rel}' 2>&1"
+            mkdir -p "${BUNDLE}/simnovator/container_files/${key}"
+            sim_podman "simnovator/container_files/${key}/${fname}" \
+                "simnovator: app log ${key}:${rel}" \
+                exec "$actual" sh -c "tail -n ${DOCKER_LOG_TAIL:-20000} '${rel}' 2>&1"
         done
+
+        # ----- 6c) systemd journal per quadlet unit ---------------------------
+        # Quadlet-managed containers carry the label PODMAN_SYSTEMD_UNIT=<unit>.
+        # On quadlet hosts the journal is the AUTHORITATIVE log: it survives
+        # container restarts (podman logs only has the current instance) and
+        # records health-check failures + dependency ordering ("waiting for
+        # keycloak") that podman stdout never shows. One remote script loops
+        # over the containers, so there's a single round-trip and no per-name
+        # quoting. Auto-detecting: on pre-quadlet hosts no container has the
+        # label, so it writes a clear sentinel instead of failing.
+        if [[ -n "${START:-}" && "$START" != "0" ]]; then
+            jwin="--since @${START} --until @${END:-$(date +%s)}"
+        else
+            jwin="-n ${DOCKER_LOG_TAIL:-20000}"
+        fi
+        _pj="${PODMAN_BIN:-podman}"
+        mkdir -p "${BUNDLE}/simnovator/journal"
+        journal_script=$(cat <<EOF
+#!/bin/bash
+set +e
+PODMAN=${_pj}
+names=\$(\$PODMAN ps --format '{{.Names}}' 2>/dev/null)
+any=0
+for c in \$names; do
+    u=\$(\$PODMAN inspect "\$c" --format '{{index .Config.Labels "PODMAN_SYSTEMD_UNIT"}}' 2>/dev/null)
+    [ -z "\$u" ] && continue
+    any=1
+    echo "==================== \$c  (unit=\$u) ===================="
+    sudo -n journalctl -u "\$u" ${jwin} --no-pager 2>&1 || journalctl -u "\$u" ${jwin} --no-pager 2>&1
+    echo
+done
+[ "\$any" = "0" ] && echo "(no containers carry PODMAN_SYSTEMD_UNIT — host is not quadlet/systemd-managed; podman logs above already cover stdout)"
+EOF
+)
+        log "--- Simnovator systemd journal (quadlet units, window: ${jwin}) ---"
+        remote_script_pipe "${SIMNOVATOR_HOST}" "${SIMNOVATOR_USER:-sysadmin}" "${SIMNOVATOR_SSH_PORT:-22}" \
+            "simnovator/journal/units.journal.log" "simnovator: systemd journal (quadlet units)" \
+            "${SIMNOVATOR_PASS:-}" "$journal_script"
+
+        # ----- 6d) native `simnovator logs` bundle ----------------------------
+        # Today's release ships a built-in time-windowed log bundler
+        # (`sudo simnovator logs ...` -> <window>-logs.tar). Best-effort:
+        #   1. record the CLI presence/version + `logs --help` (always, cheap —
+        #      this captures the exact supported syntax into the bundle)
+        #   2. if present (and not disabled via SIM_NATIVE_LOGS=0), attempt one
+        #      windowed export and pull the tar back binary-safe.
+        # The window is derived from the resolved test/lookback window so we
+        # never trigger the CLI's 72h default. Absent CLI => clean NOTE.
+        mkdir -p "${BUNDLE}/simnovator/native_logs"
+        sim_run "simnovator/native_logs/cli.txt" "simnovator: native CLI presence" \
+            "command -v simnovator >/dev/null 2>&1 && { echo present; simnovator --version 2>&1 | head -3; } || echo 'absent (pre-quadlet release)'"
+        sim_run "simnovator/native_logs/logs_help.txt" "simnovator: 'simnovator logs' help" \
+            "simnovator logs --help 2>&1 || simnovator help logs 2>&1 || simnovator logs -h 2>&1 || echo '(no help available / CLI absent)'"
+
+        if [[ "${SIM_NATIVE_LOGS:-auto}" == "0" ]]; then
+            mark NOTE "simnovator: native-logs tar disabled (SIM_NATIVE_LOGS=0)"
+        elif grep -qi 'absent' "${BUNDLE}/simnovator/native_logs/cli.txt" 2>/dev/null; then
+            mark NOTE "simnovator: native 'simnovator logs' CLI not present (pre-quadlet release) — podman+journal already captured"
+        else
+            # Window in minutes (>=1). Prefer the explicit lookback, else derive
+            # from START/END, else default 60.
+            if [[ -n "${LOOKBACK_MINUTES:-}" ]]; then
+                nl_mins="$LOOKBACK_MINUTES"
+            elif [[ -n "${START:-}" && "$START" != "0" ]]; then
+                nl_mins=$(( ( ${END:-$(date +%s)} - START + 59 ) / 60 ))
+            else
+                nl_mins=60
+            fi
+            (( nl_mins < 1 )) && nl_mins=1
+            nl_iso_s="$(date -u -d "@${START:-$(( $(date +%s) - nl_mins * 60 ))}" +%FT%TZ 2>/dev/null)"
+            nl_iso_e="$(date -u -d "@${END:-$(date +%s)}" +%FT%TZ 2>/dev/null)"
+            # Remote: run the CLI in a temp dir trying a couple of likely
+            # syntax forms (sudo -n, each timeout-bounded), then cat the newest
+            # produced *-logs.tar to stdout (binary-safe via remote_pipe).
+            # ISO values have no spaces, so they word-split cleanly when $f is
+            # expanded unquoted on the remote side (don't single-quote them —
+            # quotes inside a var aren't re-evaluated, they'd pass literally).
+            nl_cmd="td=\$(mktemp -d 2>/dev/null) || exit 0; cd \"\$td\" || exit 0; for f in \"--minutes ${nl_mins}\" \"--since ${nl_iso_s} --until ${nl_iso_e}\"; do timeout 120 sudo -n simnovator logs \$f >/dev/null 2>&1 && break; done; t=\$(ls -1t *logs.tar 2>/dev/null | head -1); if [ -n \"\$t\" ]; then cat \"\$t\"; fi; cd /; rm -rf \"\$td\""
+            nl_out="simnovator/native_logs/simnovator_${nl_mins}m-logs.tar"
+            sim_pipe_best_effort "$nl_out" "simnovator: native logs tar (last ${nl_mins}m)" "$nl_cmd"
+        fi
     fi
 fi
 

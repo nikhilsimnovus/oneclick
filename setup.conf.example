@@ -60,6 +60,11 @@ SIMNOVATOR_PASS=""                      # blank = SSH key auth
 CONTAINER_ENGINE=""                     # "" auto-detect (prefers podman)
 SIMNOVATOR_CONTAINERS=""                # blank = all running containers
 DOCKER_LOG_TAIL=20000
+# Quadlet hosts (today's release): the collector auto-detects systemd-managed
+# containers (PODMAN_SYSTEMD_UNIT label) and additionally captures the systemd
+# journal per unit + container health. If the host also ships the native
+# `simnovator logs` CLI, the collector best-effort grabs its windowed tar.
+SIM_NATIVE_LOGS="auto"                  # auto = grab native tar if CLI present; 0 = never
 
 # ---- Beszel container monitoring ------------------------------------------
 # Optional. Provide a read-only viewer account. Leave BESZEL_HUB_URL blank
