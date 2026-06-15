@@ -575,9 +575,10 @@ BASH
     CPU_AFFINITY_SNIPPET="${CPU_AFFINITY_SNIPPET//__PERF_PROC_NAMES__/${PERF_PROC_NAMES:-}}"
     ue_capture "ue/cpu/cpu_affinity.txt" "cpu: t-cpu/core-alloc/smp-aff" "$CPU_AFFINITY_SNIPPET"
 
-    # top -H snapshot for the first matching perf process
+    # top -H snapshot for the first matching perf process. Guard with :- so a
+    # setup.conf that omits PERF_PROC_NAMES doesn't abort the run under `set -u`.
     ue_capture "ue/cpu/top_threads.txt" "cpu: top -H per-thread" \
-        'p=$(for n in '"${PERF_PROC_NAMES}"'; do pgrep -f "$n" 2>/dev/null | head -1; done | head -1); [[ -n "$p" ]] && top -H -b -n 2 -p "$p" 2>&1 || echo "(no perf process found)"'
+        'p=$(for n in '"${PERF_PROC_NAMES:-}"'; do pgrep -f "$n" 2>/dev/null | head -1; done | head -1); [[ -n "$p" ]] && top -H -b -n 2 -p "$p" 2>&1 || echo "(no perf process found)"'
 
     # --- net/ — NIC offload / ring settings (relevant for throughput tests) ---
     ue_capture "ue/net/ip_link.txt" "net: ip link" "ip -s link"
@@ -1196,6 +1197,35 @@ if [[ "$COLLECT_SIMNOVATOR" == "1" && -n "${SIMNOVATOR_HOST:-}" && -f "${BUNDLE}
             nl_out="simnovator/native_logs/simnovator-${nl_dur}-logs.tar.gz"
             sim_pipe_best_effort "$nl_out" "simnovator: native logs archive (last ${nl_dur})" "$nl_cmd"
         fi
+    fi
+fi
+
+# ===========================================================================
+# 6f) UE-HOST SIMNOVATOR APP MANAGER JOURNAL (time-windowed)
+#     The Simnovator App Manager on the UE-sim host runs as a systemd service
+#     (start_app_manager.sh) and logs to journald — NOT a flat file — so the
+#     UESIM log tar in section 1 never captures it. We grab it here (post-REST,
+#     so START/END is resolved in test-case mode too) over the full test /
+#     lookback window — i.e. the whole run, however long it ran or failed for.
+#     Identifier is overridable via UE_APP_MANAGER_IDENT. Try sudo first, fall
+#     back to plain journalctl (works if the user is in the systemd-journal
+#     group). Empty in window => dropped (host not using journald). The analyzer
+#     scans ue/logs/*.journal.log, so its error/CRITICAL hits land in ANALYSIS.md.
+# ===========================================================================
+if [[ "$COLLECT_UE" == "1" && -n "${UE_HOST:-}" ]]; then
+    AM_IDENT="${UE_APP_MANAGER_IDENT:-start_app_manager.sh}"
+    if [[ -n "${START:-}" && "$START" != "0" ]]; then
+        am_win="--since @${START} --until @${END:-$(date +%s)}"
+    else
+        am_win="-n 50000"
+    fi
+    log "--- UE Simnovator App Manager journal (ident=${AM_IDENT}, window: ${am_win}) ---"
+    ue_capture "ue/logs/app_manager.journal.log" "ue: app-manager journal (${AM_IDENT})" \
+        "{ sudo -n journalctl -t '${AM_IDENT}' ${am_win} --no-pager 2>/dev/null || journalctl -t '${AM_IDENT}' ${am_win} --no-pager 2>&1; } | grep -v 'corrupted, ignoring file' || true"
+    amf="${BUNDLE}/ue/logs/app_manager.journal.log"
+    if [[ -f "$amf" ]] && ! grep -qvE '^[[:space:]]*$|-- No entries --|-- Journal begins|-- Boot' "$amf" 2>/dev/null; then
+        rm -f "$amf"
+        mark NOTE "ue: app-manager journal empty in window (ident=${AM_IDENT}) — dropped"
     fi
 fi
 

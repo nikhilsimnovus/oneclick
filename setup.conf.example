@@ -46,6 +46,10 @@ NUMA_CONFIG_PATH=""
 UESIM_LOG_DIR="/var/log/lte /root/ue"   # space-separated dirs are supported
 UESIM_LOG_MAX_MB=200
 PERF_PROC_NAMES="app-manager lteue iperf3"
+# The Simnovator App Manager on the UE host logs to the systemd journal (not a
+# flat file). The collector captures it over the test/lookback window via this
+# journald syslog identifier. Override only if your build tags it differently.
+UE_APP_MANAGER_IDENT="start_app_manager.sh"
 
 # ---- iperf logs (collected from the UE host after the REST section) -------
 IPERF_LOG_DIR="/root/simnovator-app-manager/web/iperf/logs"

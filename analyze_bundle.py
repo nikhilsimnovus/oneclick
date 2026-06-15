@@ -376,6 +376,24 @@ def analyze_uesim_log(bundle: Path) -> dict | None:
     return {"lines": text.count("\n"), "critical": crit, "errors": err}
 
 
+def analyze_app_manager(bundle: Path) -> dict | None:
+    """UE-host Simnovator App Manager journal (ue/logs/app_manager.journal.log).
+
+    Captured from the UE box's systemd journal (the app-manager logs there, not
+    to a flat file). Counts CRITICAL + error hits over the collected window so a
+    failed / long run surfaces app-manager trouble in the summary.
+    """
+    f = bundle / "ue" / "logs" / "app_manager.journal.log"
+    if not f.exists():
+        return None
+    try:
+        text = f.read_text(errors="replace")
+    except Exception:  # noqa: BLE001
+        return None
+    crit, err = _count_errors(text)
+    return {"lines": text.count("\n"), "critical": crit, "errors": err}
+
+
 def analyze_callbox(bundle: Path) -> dict | None:
     f = bundle / "callbox" / "amari_monitor.txt"
     if not f.exists():
@@ -726,7 +744,7 @@ def analyze_deep_checks(bundle: Path) -> list[tuple[str, str, str]]:
 _STATUS_GLYPH = {"OK": "[ OK ]", "WARN": "[WARN]", "FAIL": "[FAIL]", "ERR": "[ERR ]"}
 
 
-def render(test, heat, cpu, containers, uesim, callbox, deep=None) -> str:
+def render(test, heat, cpu, containers, uesim, callbox, deep=None, app_manager=None) -> str:
     rows: list[tuple[str, str, str]] = []   # (label, status, message)
 
     if test:
@@ -771,6 +789,18 @@ def render(test, heat, cpu, containers, uesim, callbox, deep=None) -> str:
         if uesim["critical"]:
             bits.insert(0, f'{uesim["critical"]} CRITICAL')
         rows.append(("UESIM log", st, " · ".join(bits)))
+
+    if app_manager:
+        if app_manager["critical"]:
+            st = "FAIL"
+        elif app_manager["errors"] > 500:
+            st = "WARN"
+        else:
+            st = "OK"
+        bits = [f'{app_manager["errors"]} error hits', f'{app_manager["lines"]:,} lines']
+        if app_manager["critical"]:
+            bits.insert(0, f'{app_manager["critical"]} CRITICAL')
+        rows.append(("App Manager (UE)", st, " · ".join(bits)))
 
     if callbox:
         if not callbox["reachable"]:
@@ -855,10 +885,11 @@ def main() -> int:
     cpu        = analyze_cpu(args.bundle)
     containers = analyze_containers(args.bundle)
     uesim      = analyze_uesim_log(args.bundle)
+    app_manager = analyze_app_manager(args.bundle)
     callbox    = analyze_callbox(args.bundle)
     deep       = analyze_deep_checks(args.bundle)
 
-    report = render(test, heat, cpu, containers, uesim, callbox, deep)
+    report = render(test, heat, cpu, containers, uesim, callbox, deep, app_manager)
     out = args.bundle / "ANALYSIS.md"
     out.write_text(report)
     print(report)
