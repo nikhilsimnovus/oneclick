@@ -30,7 +30,7 @@ from flask import Flask, abort, jsonify, redirect, render_template_string, reque
 # OneClick UI version. Bump on every push to oneclick repo so customers
 # can confirm the Update button actually applied — the new number shows
 # up in the topbar after the page reloads.
-VERSION = "1.0.10"
+VERSION = "1.0.11"
 
 SCRIPT_DIR = Path(os.environ.get("PERFQA_SCRIPT_DIR", "/opt/perf-qa"))
 SCRIPT = SCRIPT_DIR / "collect_perf_data.sh"
@@ -1109,6 +1109,17 @@ def bundle_system(name):
     if status == 200:
         return Response(text, mimetype="text/plain; charset=utf-8")
     return Response("(no SYSTEM.md in this bundle — re-run with the latest collector)",
+                    status=404, mimetype="text/plain; charset=utf-8")
+
+
+@app.route("/bundles/<name>/disk")
+def bundle_disk(name):
+    """Extract and serve simnovator/disk_usage.txt (filesystem %, per-volume
+    sizes, cleanup cap) as text/plain — feeds the Storage view. (SIM40-2418)"""
+    text, status = _extract_member_text(name, "disk_usage.txt")
+    if status == 200:
+        return Response(text, mimetype="text/plain; charset=utf-8")
+    return Response("(no disk_usage.txt in this bundle — re-run with the latest collector)",
                     status=404, mimetype="text/plain; charset=utf-8")
 
 

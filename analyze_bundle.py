@@ -597,6 +597,40 @@ def _check_disk(infos: dict) -> list[tuple[str, str, str]]:
     return out
 
 
+def _check_sim_volumes(bundle: Path) -> list[tuple[str, str, str]]:
+    """Per-volume disk usage from simnovator/disk_usage.txt. The autosave /
+    timescaledb / openobserve *volumes* are the real disk hogs (not containers,
+    so they never show in the health UI). Also surfaces the executor cleanup cap
+    and how close the tracked total is to it. (SIM40-2418)
+    """
+    p = bundle / "simnovator" / "disk_usage.txt"
+    if not p.exists():
+        return []
+    vols: list[tuple[str, str]] = []   # (name, human-size)
+    cap_mb = total_mb = None
+    for line in p.read_text(errors="replace").splitlines():
+        s = line.strip()
+        m = re.match(r"([\d.]+[KMGT]?)\s+.*/volumes/simnovator_(\S+)", s)
+        if m:
+            vols.append((m.group(2), m.group(1)))
+        m = re.search(r"CLEANUP_MAX_DISK_USAGE_ALLOWED_MB=(\d+)", s)
+        if m:
+            cap_mb = int(m.group(1))
+        m = re.search(r"Total:\s*(\d+)\s*MB", s)
+        if m:
+            total_mb = int(m.group(1))
+    if not vols and total_mb is None:
+        return []
+    bits = [f"{n} {sz}" for n, sz in vols[:5]] or ["(no volumes found)"]
+    st = "OK"
+    if cap_mb:
+        frac = (total_mb or 0) / cap_mb
+        tail = f" (used {(total_mb or 0)/1024:.1f} GiB, {frac*100:.0f}%)" if total_mb is not None else ""
+        bits.append(f"cleanup cap {cap_mb/1024:.0f} GiB{tail}")
+        st = "FAIL" if frac >= 0.9 else ("WARN" if frac >= 0.8 else "OK")
+    return [("Disk [sim volumes]", st, " · ".join(bits))]
+
+
 def _ring_after(label: str, lines: list[str], start: int, limit: int = 10) -> dict:
     """Find RX:/TX: values in the `limit` lines following `start` (label index)."""
     out = {}
@@ -737,6 +771,7 @@ def analyze_deep_checks(bundle: Path) -> list[tuple[str, str, str]]:
     for f in (_check_container_restart, _check_container_cpu):
         r = f(bundle)
         if r: out.append(r)
+    out.extend(_check_sim_volumes(bundle))
     return out
 
 
