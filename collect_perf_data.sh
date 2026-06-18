@@ -244,6 +244,33 @@ remote_pipe() {  # <host> <user> <port> <outfile> <label> <cmd-string> [password
     fi
 }
 
+# Like remote_pipe, but an empty/failed result is SKIPPED rather than FAILED —
+# for optional artifacts that legitimately may not exist (e.g. iperf logs when
+# no iperf run happened in the collection window). Binary-safe stdout.
+remote_pipe_optional() {  # <host> <user> <port> <outfile> <label> <cmd-string> [password]
+    local host="$1" user="$2" port="$3" out="$4" label="$5" cmd="$6" pass="${7:-}"
+    local target="${BUNDLE}/${out}"; mkdir -p "$(dirname "$target")"
+    local rc
+    if [[ -z "$host" ]]; then
+        bash -c "$cmd" > "$target" 2>>"$LOG"; rc=$?
+    elif [[ -n "$pass" ]] && have sshpass; then
+        sshpass -p "$pass" ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 \
+            -p "$port" "${user}@${host}" "$cmd" > "$target" 2>>"$LOG"; rc=$?
+    elif [[ -z "$pass" ]]; then
+        ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 \
+            -p "$port" "${user}@${host}" "$cmd" > "$target" 2>>"$LOG"; rc=$?
+    else
+        mark "SKIPPED" "$label (password set for ${host} but sshpass not installed)"; return
+    fi
+    if [[ ${rc:-1} -eq 0 ]] && [[ -s "$target" ]]; then
+        local sz; sz=$(stat -c%s "$target" 2>/dev/null || echo 0)
+        mark "COLLECTED" "$label -> ${out} (${sz} bytes)"
+    else
+        rm -f "$target"
+        mark "SKIPPED" "$label — none in the collected window"
+    fi
+}
+
 # ---- UE-side helpers --------------------------------------------------------
 # When UE_HOST is set, all UE captures happen over SSH; otherwise local.
 # Helpers transparently use UE_HOST/USER/PORT/PASS from setup.conf.
@@ -505,9 +532,15 @@ elif [[ "$COLLECT_UE" == "1" ]]; then
     [[ -n "${NUMA_CONFIG_PATH:-}" ]] && ue_copy_file "$NUMA_CONFIG_PATH" "ue/system/numa_config" "system: numa_config file"
 
     # --- config/ — workload_affinity.json (+ single-array shape sanity check) ---
+    # Optional file — present only on some UE rigs. Capture with a sentinel so a
+    # missing file is SKIPPED, not a red FAILED.
     if [[ -n "${WORKLOAD_AFFINITY_JSON:-}" ]]; then
-        ue_copy_file "$WORKLOAD_AFFINITY_JSON" "ue/config/workload_affinity.json" "workload config"
-        if [[ -s "${UE}/config/workload_affinity.json" ]] && have_python3; then
+        ue_capture "ue/config/workload_affinity.json" "workload config" \
+            "cat '${WORKLOAD_AFFINITY_JSON}' 2>/dev/null || sudo -n cat '${WORKLOAD_AFFINITY_JSON}' 2>/dev/null || echo '__WAF_NOT_FOUND__'"
+        if [[ -f "${UE}/config/workload_affinity.json" ]] && grep -q '__WAF_NOT_FOUND__' "${UE}/config/workload_affinity.json" 2>/dev/null; then
+            rm -f "${UE}/config/workload_affinity.json"
+            mark SKIPPED "workload config (not present at ${WORKLOAD_AFFINITY_JSON})"
+        elif [[ -s "${UE}/config/workload_affinity.json" ]] && have_python3; then
             python3 - "${UE}/config/workload_affinity.json" > "${UE}/config/workload_affinity_check.txt" 2>&1 <<'PYEOF'
 import json, sys
 try:
@@ -655,17 +688,28 @@ elif [[ "$COLLECT_SIMNOVATOR" == "1" ]]; then
           && -n "${BESZEL_PYTHON:-}" && -x "${BESZEL_PYTHON}" \
           && -f "$beszel_helper" && -n "$beszel_target_host" ]]; then
         out="${SN}/beszel_${beszel_target_host//./_}.png"
+        bez_log="$(mktemp 2>/dev/null || echo "${BUNDLE}/.bez.$$")"
         if "$BESZEL_PYTHON" "$beszel_helper" \
               --hub "$BESZEL_HUB_URL" \
               --user "$BESZEL_USER" --password "$BESZEL_PASS" \
               --match-host "$beszel_target_host" \
               --range "${BESZEL_CHART_RANGE:-1h}" \
-              --out "$out" >> "$LOG" 2>&1; then
+              --out "$out" > "$bez_log" 2>&1; then
+            cat "$bez_log" >> "$LOG"
             sz=$(stat -c%s "$out" 2>/dev/null || echo 0)
             mark COLLECTED "simnovator: Beszel screenshot (${BESZEL_CHART_RANGE:-1h} for ${beszel_target_host}) -> simnovator/$(basename "$out") (${sz} bytes)"
         else
-            mark FAILED "simnovator: Beszel screenshot for ${beszel_target_host} (see collect.log) - hub=${BESZEL_HUB_URL}"
+            cat "$bez_log" >> "$LOG"
+            # "no system found" is a hub data/access gap, not a collector failure
+            # — the host just isn't registered (or the viewer lacks access). NOTE,
+            # not FAILED. Genuine errors (hub down, playwright crash) stay FAILED.
+            if grep -qiE 'no system found|no matching|not found' "$bez_log" 2>/dev/null; then
+                mark NOTE "simnovator: Beszel — no system registered for ${beszel_target_host} on the hub (add it / grant viewer access)"
+            else
+                mark FAILED "simnovator: Beszel screenshot for ${beszel_target_host} (see collect.log) - hub=${BESZEL_HUB_URL}"
+            fi
         fi
+        rm -f "$bez_log"
     elif [[ -n "${BESZEL_EXPORT_CMD:-}" ]]; then
         bash -c "$BESZEL_EXPORT_CMD" > "${SN}/beszel_export.txt" 2>&1 \
             && mark COLLECTED "simnovator: Beszel export cmd -> simnovator/beszel_export.txt" \
@@ -771,7 +815,14 @@ fi
 #   - If TEST_CASE_NAME is empty or "LAST_RUN", auto-discover via the
 #     footer endpoint (same one the GUI's LAST RUN TEST widget uses).
 # ===========================================================================
-if [[ "$COLLECT_REST_API" == "1" ]]; then
+if [[ "$COLLECT_REST_API" == "1" && "${LOOKBACK_ACTIVE:-0}" == "1" ]]; then
+    # LOOKBACK mode has no test case to anchor against — the REST API only
+    # exposes per-iteration data (stats/logs/screenshots keyed by iterationId),
+    # none of which applies to an ad-hoc time window. Skip the whole section
+    # (incl. the login) so a slow/non-default API port can't redden the
+    # pipeline for a mode that wouldn't use the data anyway.
+    mark SKIPPED "rest-api: skipped in LOOKBACK mode (no test case; per-iteration data N/A)"
+elif [[ "$COLLECT_REST_API" == "1" ]]; then
     log "--- REST API (test case) ---"
     API="${BUNDLE}/rest_api"; mkdir -p "$API"
 
@@ -1304,11 +1355,13 @@ if [[ "${COLLECT_IPERF:-1}" == "1" && -n "${IPERF_LOG_DIR:-}" ]]; then
         iperf_cmd="newest=\$(sudo -n ls -1t '${IPERF_LOG_DIR}' 2>/dev/null | head -1); [[ -n \"\$newest\" ]] && sudo -n tar czf - -C '${IPERF_LOG_DIR}' \"\$newest\" || exit 2"
     fi
     mkdir -p "${BUNDLE}/ue/logs"
+    # Optional: a window with no iperf run yields no subdirs (cmd exits 2) — that
+    # is SKIPPED, not FAILED.
     if [[ -n "${UE_HOST:-}" ]]; then
-        remote_pipe "$UE_HOST" "${UE_USER:-sysadmin}" "${UE_SSH_PORT:-22}" \
+        remote_pipe_optional "$UE_HOST" "${UE_USER:-sysadmin}" "${UE_SSH_PORT:-22}" \
             "ue/logs/iperf_logs.tar.gz" "iperf: logs ($desc)" "$iperf_cmd" "${UE_PASS:-}"
     else
-        remote_pipe "" "" "" "ue/logs/iperf_logs.tar.gz" "iperf: logs ($desc)" "$iperf_cmd"
+        remote_pipe_optional "" "" "" "ue/logs/iperf_logs.tar.gz" "iperf: logs ($desc)" "$iperf_cmd"
     fi
 fi
 
