@@ -1112,6 +1112,17 @@ def bundle_system(name):
                     status=404, mimetype="text/plain; charset=utf-8")
 
 
+@app.route("/bundles/<name>/disk")
+def bundle_disk(name):
+    """Serve simnovator/disk_usage.txt — filesystem %, per-volume sizes
+    (autosave/timescaledb/openobserve), /var/log, cores, and the cleanup cap."""
+    text, status = _extract_member_text(name, "simnovator/disk_usage.txt")
+    if status == 200:
+        return Response(text, mimetype="text/plain; charset=utf-8")
+    return Response("(no disk_usage.txt in this bundle — re-run with the latest collector)",
+                    status=404, mimetype="text/plain; charset=utf-8")
+
+
 # --- Bundle file browser ----------------------------------------------------
 # Two endpoints feed the Browse tab: /files returns the full tree as JSON,
 # /file?path=... streams one file as text (size-capped so a giant log doesn't
