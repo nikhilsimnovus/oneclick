@@ -69,6 +69,8 @@ DOCKER_LOG_TAIL=20000
 # journal per unit + container health. If the host also ships the native
 # `simnovator logs` CLI, the collector best-effort grabs its windowed tar.
 SIM_NATIVE_LOGS="auto"                  # auto = grab native tar if CLI present; 0 = never
+# Top-level Simnovator setup/deploy log on the Simnovator host (whole file).
+SIM_MASTER_SETUP_LOG="/home/simnovus/master_setup.log"
 
 # ---- Beszel container monitoring ------------------------------------------
 # Optional. Provide a read-only viewer account. Leave BESZEL_HUB_URL blank

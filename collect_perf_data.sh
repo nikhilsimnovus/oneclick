@@ -658,24 +658,6 @@ elif [[ "$COLLECT_SIMNOVATOR" == "1" ]]; then
         sim_run "simnovator/systemd_units.txt" "simnovator: systemd unit states (quadlet)" \
             "systemctl list-units --type=service --all --no-pager 2>/dev/null | grep -iE 'simnovator|keycloak|observe|timescale|redis|valkey|gateway|authenticator|executor|worker|stats|frontend|test-(creator|processor)' || echo '(no matching systemd units — pre-quadlet podman-compose host)'"
 
-        # Disk / storage usage. The product health UI shows per-container CPU/RAM
-        # but no disk; the real hogs are the *volumes* (autosave/timescaledb/
-        # openobserve), which never appear as containers. Capture filesystem %,
-        # per-volume sizes, /var/log, cores, and the executor cleanup cap + last
-        # reading so a filling disk is visible before it causes an outage. (SIM40-2418)
-        sim_run "simnovator/disk_usage.txt" "simnovator: disk + volume usage" '
-          echo "=== filesystem (root) ==="; df -h / | tail -1
-          echo; echo "=== simnovator volumes (disk used) ==="
-          VB="$HOME/.local/share/containers/storage/volumes"
-          [ -d "$VB" ] || VB=/var/lib/containers/storage/volumes
-          du -hs "$VB"/simnovator_* 2>/dev/null | sort -rh
-          echo; echo "=== /var/log (top) ==="; du -hsx /var/log 2>/dev/null
-          du -hx /var/log 2>/dev/null | sort -rh | head -6
-          echo; echo "=== core dumps ==="; du -hs /var/tmp/cores /var/crash 2>/dev/null
-          echo; echo "=== executor cleanup cap + last reading ==="
-          podman inspect simnovator-executor --format "{{range .Config.Env}}{{println .}}{{end}}" 2>/dev/null | grep -i CLEANUP_MAX_DISK
-          journalctl --user -u simnovator-executor --no-pager 2>/dev/null | grep -iE "Disk Usage -|within safe limits|deleting|Entering cleanup" | tail -4'
-
         # Per-container inspect JSON (point-in-time, no window needed). The
         # actual `logs` dump moves to the post-REST section so we can pass
         # --since=<test start> and capture only test-window output. Bundle
@@ -693,6 +675,19 @@ elif [[ "$COLLECT_SIMNOVATOR" == "1" ]]; then
         echo "$clist" > "${BUNDLE}/.sim_containers"
     else
         mark SKIPPED "simnovator: no container engine (podman/docker) detectable on ${SIMNOVATOR_HOST:-localhost}"
+    fi
+
+    # --- Simnovator host setup log: /home/simnovus/master_setup.log ---
+    # The deploy/setup flow writes a master setup log under the simnovus home
+    # (root-owned, hence sudo). Whole file (it's a bounded setup/deploy log, not
+    # something to window). Path overridable via SIM_MASTER_SETUP_LOG. Missing
+    # => SKIPPED (not FAILED) via the sentinel.
+    SIM_MASTER_SETUP_LOG="${SIM_MASTER_SETUP_LOG:-/home/simnovus/master_setup.log}"
+    sim_run "simnovator/master_setup.log" "simnovator: master_setup.log" \
+        "sudo -n cat '${SIM_MASTER_SETUP_LOG}' 2>/dev/null || cat '${SIM_MASTER_SETUP_LOG}' 2>/dev/null || echo '__MSL_NOT_FOUND__'"
+    if [[ -f "${BUNDLE}/simnovator/master_setup.log" ]] && grep -q '__MSL_NOT_FOUND__' "${BUNDLE}/simnovator/master_setup.log" 2>/dev/null; then
+        rm -f "${BUNDLE}/simnovator/master_setup.log"
+        mark SKIPPED "simnovator: master_setup.log not present at ${SIM_MASTER_SETUP_LOG}"
     fi
 
     # --- Beszel container monitoring (historical resource time-series) ---
