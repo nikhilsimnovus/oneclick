@@ -741,49 +741,6 @@ def _check_container_cpu(bundle: Path) -> tuple[str, str, str] | None:
             f"{len(hot)} container(s) ≥80% CPU: " + ", ".join(bits))
 
 
-def _check_sim_volumes(bundle: Path) -> list[tuple[str, str, str]]:
-    """Per-volume disk usage from simnovator/disk_usage.txt (autosave/timescaledb/
-    openobserve) plus the executor cleanup cap. The product health view shows
-    only container CPU/RAM, so this is the one place volume growth is visible.
-    """
-    p = bundle / "simnovator" / "disk_usage.txt"
-    if not p.exists():
-        return []
-    fs_pct = cap_mb = total_mb = None
-    vols: list[tuple[str, str]] = []
-    for line in p.read_text(errors="replace").splitlines():
-        s = line.strip()
-        m = re.search(r"(\d+)%\s+/\s*$", s)
-        if m and fs_pct is None:
-            fs_pct = int(m.group(1))
-        m = re.match(r"([\d.]+[KMGT]?)\s+.*/volumes/simnovator_(\S+)", s)
-        if m:
-            vols.append((m.group(2), m.group(1)))
-        m = re.search(r"CLEANUP_MAX_DISK_USAGE_ALLOWED_MB=(\d+)", s)
-        if m:
-            cap_mb = int(m.group(1))
-        m = re.search(r"Total:\s*(\d+)\s*MB", s)
-        if m:
-            total_mb = int(m.group(1))
-    if not vols and fs_pct is None:
-        return []
-    bits: list[str] = []
-    if vols:
-        bits.append(" · ".join(f"{n} {sz}" for n, sz in vols[:4]))
-    pct_cap = round(100 * total_mb / cap_mb) if (cap_mb and total_mb is not None) else None
-    if pct_cap is not None:
-        bits.append(f"cleanup {total_mb // 1024}G/{cap_mb // 1024}G ({pct_cap}%)")
-    if fs_pct is not None:
-        bits.append(f"root fs {fs_pct}%")
-    if (fs_pct or 0) >= 90 or (pct_cap or 0) >= 90:
-        st = "FAIL"
-    elif (fs_pct or 0) >= 80 or (pct_cap or 0) >= 80:
-        st = "WARN"
-    else:
-        st = "OK"
-    return [("Disk [sim volumes]", st, " · ".join(bits))]
-
-
 def analyze_deep_checks(bundle: Path) -> list[tuple[str, str, str]]:
     """Run every deep check and return the flat list of findings."""
     out: list[tuple[str, str, str]] = []
@@ -815,7 +772,6 @@ def analyze_deep_checks(bundle: Path) -> list[tuple[str, str, str]]:
     for f in (_check_container_restart, _check_container_cpu):
         r = f(bundle)
         if r: out.append(r)
-    out.extend(_check_sim_volumes(bundle))
     return out
 
 
