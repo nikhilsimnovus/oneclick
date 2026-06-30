@@ -658,6 +658,24 @@ elif [[ "$COLLECT_SIMNOVATOR" == "1" ]]; then
         sim_run "simnovator/systemd_units.txt" "simnovator: systemd unit states (quadlet)" \
             "systemctl list-units --type=service --all --no-pager 2>/dev/null | grep -iE 'simnovator|keycloak|observe|timescale|redis|valkey|gateway|authenticator|executor|worker|stats|frontend|test-(creator|processor)' || echo '(no matching systemd units — pre-quadlet podman-compose host)'"
 
+        # Disk / storage usage. The product health UI shows per-container CPU/RAM
+        # but no disk; the real hogs are the *volumes* (autosave/timescaledb/
+        # openobserve), which never appear as containers. Capture filesystem %,
+        # per-volume sizes, /var/log, cores, and the executor cleanup cap + last
+        # reading so a filling disk is visible before it causes an outage. (SIM40-2418)
+        sim_run "simnovator/disk_usage.txt" "simnovator: disk + volume usage" '
+          echo "=== filesystem (root) ==="; df -h / | tail -1
+          echo; echo "=== simnovator volumes (disk used) ==="
+          VB="$HOME/.local/share/containers/storage/volumes"
+          [ -d "$VB" ] || VB=/var/lib/containers/storage/volumes
+          du -hs "$VB"/simnovator_* 2>/dev/null | sort -rh
+          echo; echo "=== /var/log (top) ==="; du -hsx /var/log 2>/dev/null
+          du -hx /var/log 2>/dev/null | sort -rh | head -6
+          echo; echo "=== core dumps ==="; du -hs /var/tmp/cores /var/crash 2>/dev/null
+          echo; echo "=== executor cleanup cap + last reading ==="
+          podman inspect simnovator-executor --format "{{range .Config.Env}}{{println .}}{{end}}" 2>/dev/null | grep -i CLEANUP_MAX_DISK
+          journalctl --user -u simnovator-executor --no-pager 2>/dev/null | grep -iE "Disk Usage -|within safe limits|deleting|Entering cleanup" | tail -4'
+
         # Per-container inspect JSON (point-in-time, no window needed). The
         # actual `logs` dump moves to the post-REST section so we can pass
         # --since=<test start> and capture only test-window output. Bundle
