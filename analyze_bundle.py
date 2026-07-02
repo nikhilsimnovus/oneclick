@@ -60,7 +60,14 @@ NOISE_RE = re.compile(
     r"zero\s+errors?|"
     r"_error\b|"                       # snake_case field names
     r"errCount\b|"
-    r'"error":\s*"?(null|none|0)',
+    r'"error":\s*"?(null|none|0)|'
+    # Structured logs the app itself tags as non-error: a level=info/debug/trace
+    # line is not an error hit even if its message/command contains an error
+    # keyword. (app-manager INFO "Constructed IPerf command ... --rcv-timeout"
+    # matched TIMEOUT and inflated the count by ~80k on a 72h run.)
+    r"level\s*=\s*(?:info|debug|trace)\b|"
+    r'"level"\s*:\s*"(?:info|debug|trace)"|'
+    r"rcv-timeout",                     # iperf flag name, not a timeout error
     re.IGNORECASE,
 )
 
