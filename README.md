@@ -32,7 +32,9 @@ oneclick/
 See **`INSTALL.md`** for the full step-by-step. Short version:
 
 ```bash
-tar xzf oneclick-*.tar.gz       # or: git clone https://github.com/nikhilsimnovus/oneclick.git
+tar xzf oneclick-*.tar.gz       # primary path (offline-friendly)
+# or, from the private repo (needs a read token / SSH deploy key):
+#   git clone https://github.com/Simnovus-Tech/oneclick.git
 cd oneclick
 sudo bash scripts/install.sh
 ```
@@ -41,7 +43,15 @@ The installer detects apt/dnf, installs prereqs, creates the service user + FHS-
 
 ## Updates
 
-Each Flask tab has a green **↓ Update** button in the top-right corner. One click pulls the latest tarball from this repo's main branch and re-runs `scripts/install.sh`. The service restarts automatically; the page reloads with the new code. No SSH, no manual file copies.
+Each Flask tab has a green **↓ Update** button in the top-right corner. One click pulls the latest tarball from this repo's main branch and re-runs `scripts/install.sh`. The service restarts automatically; the page reloads with the new code.
+
+Because this repo is **private**, the updater authenticates with a GitHub token. Provide it once at install time:
+
+```bash
+sudo ONECLICK_UPDATE_TOKEN=<read-only-token> bash scripts/install.sh
+```
+
+The installer stores it root-only at `/etc/oneclick/update_token` (0600); the `perfqa-update` wrapper reads it for each Update. Use a **fine-grained, read-only (Contents: read) token scoped to just this repo**. Without a token the Update button reports a clear error and nothing else is affected (you can always update via the offline tarball).
 
 The Update flow uses a sudoers-whitelisted wrapper (`/usr/local/sbin/perfqa-update`) so the service user can self-update without being granted general root.
 

@@ -30,7 +30,7 @@ from flask import Flask, abort, jsonify, redirect, render_template_string, reque
 # OneClick UI version. Bump on every push to oneclick repo so customers
 # can confirm the Update button actually applied — the new number shows
 # up in the topbar after the page reloads.
-VERSION = "1.0.13"
+VERSION = "1.0.14"
 
 SCRIPT_DIR = Path(os.environ.get("PERFQA_SCRIPT_DIR", "/opt/perf-qa"))
 SCRIPT = SCRIPT_DIR / "collect_perf_data.sh"
@@ -768,7 +768,11 @@ def api_ssh_key_delete():
 # ---------------------------------------------------------------------------
 UPDATE_REPO_URL = os.environ.get(
     "PERFQA_UPDATE_TARBALL",
-    "https://github.com/nikhilsimnovus/oneclick/archive/refs/heads/main.tar.gz",
+    # Private Simnovus-Tech/oneclick — authenticated API tarball endpoint.
+    # The perfqa-update wrapper supplies the Bearer token from its root-only
+    # token file; this value is only a fallback the wrapper's own default
+    # normally supersedes.
+    "https://api.github.com/repos/Simnovus-Tech/oneclick/tarball/main",
 )
 
 
