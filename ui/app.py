@@ -30,7 +30,7 @@ from flask import Flask, abort, jsonify, redirect, render_template_string, reque
 # OneClick UI version. Bump on every push to oneclick repo so customers
 # can confirm the Update button actually applied — the new number shows
 # up in the topbar after the page reloads.
-VERSION = "1.0.15"
+VERSION = "1.0.16"
 
 SCRIPT_DIR = Path(os.environ.get("PERFQA_SCRIPT_DIR", "/opt/perf-qa"))
 SCRIPT = SCRIPT_DIR / "collect_perf_data.sh"
@@ -1733,6 +1733,17 @@ small{color:var(--mut);font-weight:400}
   padding:0 6px;border-radius:6px;transition:.12s}
 .modal-x:hover{background:#f1f5f9;color:#0f172a}
 .modal-body{padding:8px 22px 4px}
+.setup-list{display:flex;flex-direction:column;gap:6px;margin:6px 0 4px}
+.setup-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;
+  border:1px solid var(--bd);border-radius:9px;cursor:pointer;background:#fff;transition:.12s}
+.setup-row:hover{border-color:var(--brand)}
+.setup-row.sel{border-color:var(--brand);background:#fff7ed;box-shadow:0 0 0 2px rgba(249,115,22,.14)}
+.setup-row .nm{font-weight:600;font-size:13.5px;color:#0f172a}
+.setup-row .sm{font-size:11px;color:var(--mut);font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;margin-top:2px}
+.setup-row .chev{color:var(--brand);font-weight:700;font-size:13px;opacity:0;transition:.12s}
+.setup-row.sel .chev{opacity:1}
+.setup-edit{border-top:1px solid var(--bd);margin-top:10px;padding-top:4px}
+.setup-edit .eh{font-size:11px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;margin:8px 0 2px}
 .mfld{margin:13px 0}
 .mfld label{display:flex;align-items:baseline;gap:6px;font-size:12.5px;font-weight:600;color:#334155;margin-bottom:5px}
 .mfld label .lh{font-weight:400;color:var(--mut);font-size:11px}
@@ -1758,12 +1769,15 @@ small{color:var(--mut);font-weight:400}
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="setup-title">
     <div class="modal-head">
       <div>
-        <h3 id="setup-title">Host IPs</h3>
-        <div class="sub" id="setup-sub"></div>
+        <h3 id="setup-title">Setup</h3>
+        <div class="sub">Pick a setup to edit its host IPs</div>
       </div>
       <button type="button" class="modal-x" onclick="closeSetup()" aria-label="Close">&times;</button>
     </div>
-    <div class="modal-body" id="setup-fields"></div>
+    <div class="modal-body">
+      <div class="setup-list" id="setup-list"></div>
+      <div class="setup-edit" id="setup-fields"></div>
+    </div>
     <div class="modal-foot">
       <a class="adv" href="/setup" title="Credentials, paths, add/delete profiles">Advanced ↗</a>
       <span class="modal-toast" id="setup-toast"></span>
@@ -1926,31 +1940,54 @@ const PROFILE_DEFAULTS = {{ profile_defaults|tojson }};
 const HOST_FIELDS = {{ host_fields|tojson }};   // [ [KEY, label, placeholder], ... ]
 const LS_KEY = 'perfqa.selected_profile';
 
-// --- Setup modal: edit the selected profile's host IPs (creds/paths live in
-//     the Advanced page). Saves straight to profiles.json via the REST API. ---
+// --- Setup modal: lists all setups (profiles); click one to edit its host
+//     IPs. Saves to profiles.json via the REST API (creds/paths stay in the
+//     Advanced page). Selecting a setup also makes it the active collection
+//     profile. ---
+let _setupSel = null;
+function _labelFor(name){
+  const o = $('#_profile').querySelector('option[value="' + CSS.escape(name) + '"]');
+  return o ? o.textContent.trim() : name;
+}
 function openSetup(ev){
   if (ev) ev.preventDefault();
-  const name = $('#_profile').value;
-  const defs = PROFILE_DEFAULTS[name] || {};
-  const opt = $('#_profile').selectedOptions[0];
-  const label = opt ? opt.textContent.trim() : name;
-  $('#setup-title').textContent = 'Host IPs';
-  $('#setup-sub').textContent = label;
+  _setupSel = $('#_profile').value;
   $('#setup-toast').textContent = '';
-  $('#setup-fields').innerHTML = HOST_FIELDS.map(([k, lbl, ph]) => {
-    const v = (defs[k] || '').replace(/"/g, '&quot;');
-    const eg = k.includes('URL') ? 'http://10.0.0.16:8090' : 'e.g. 10.0.0.34';
-    return `<div class="mfld"><label for="mf_${k}">${lbl} <span class="lh">${ph}</span></label>`
-         + `<input id="mf_${k}" data-key="${k}" value="${v}" placeholder="${eg}" autocomplete="off" spellcheck="false"></div>`;
-  }).join('');
+  renderSetupList();
+  renderSetupFields();
   $('#setup-modal').classList.add('open');
-  const first = $('#setup-fields input'); if (first) first.focus();
 }
 function closeSetup(){ $('#setup-modal').classList.remove('open'); }
 
+function renderSetupList(){
+  $('#setup-list').innerHTML = [...$('#_profile').options].map(o => {
+    const name = o.value, label = o.textContent.trim();
+    const d = PROFILE_DEFAULTS[name] || {};
+    const bits = [];
+    if (d.SIMNOVATOR_HOST) bits.push('Sim ' + d.SIMNOVATOR_HOST);
+    if (d.UE_HOST)         bits.push('UE ' + d.UE_HOST);
+    if (d.CALLBOX_HOST)    bits.push('CB ' + d.CALLBOX_HOST);
+    const sm = bits.length ? bits.join(' · ') : 'no hosts set';
+    return `<div class="setup-row ${name === _setupSel ? 'sel' : ''}" onclick="selectSetup('${name}')">`
+         + `<div><div class="nm">${label}</div><div class="sm">${sm}</div></div><span class="chev">edit ✎</span></div>`;
+  }).join('');
+}
+function selectSetup(name){ _setupSel = name; renderSetupList(); renderSetupFields(); }
+
+function renderSetupFields(){
+  const d = PROFILE_DEFAULTS[_setupSel] || {};
+  $('#setup-fields').innerHTML = '<div class="eh">Host IPs — ' + _labelFor(_setupSel) + '</div>'
+    + HOST_FIELDS.map(([k, lbl, ph]) => {
+        const v = (d[k] || '').replace(/"/g, '&quot;');
+        const eg = k.includes('URL') ? 'http://10.0.0.16:8090' : 'e.g. 10.0.0.34';
+        return `<div class="mfld"><label for="mf_${k}">${lbl} <span class="lh">${ph}</span></label>`
+             + `<input id="mf_${k}" data-key="${k}" value="${v}" placeholder="${eg}" autocomplete="off" spellcheck="false"></div>`;
+      }).join('');
+}
+
 async function saveSetup(){
-  const name = $('#_profile').value;
-  const save = $('#setup-save'); const toast = $('#setup-toast');
+  const name = _setupSel;
+  const save = $('#setup-save'), toast = $('#setup-toast');
   save.disabled = true; toast.style.color = 'var(--mut)'; toast.textContent = 'Saving…';
   const ips = {};
   document.querySelectorAll('#setup-fields input').forEach(i => ips[i.dataset.key] = i.value.trim());
@@ -1965,7 +2002,9 @@ async function saveSetup(){
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.message || 'save failed');
     PROFILE_DEFAULTS[name] = body.defaults;   // keep the page in sync
+    $('#_profile').value = name;              // selecting a setup makes it active
     onProfileChange();                        // re-tick section checkboxes
+    renderSetupList();                        // refresh the row summaries
     toast.style.color = '#16a34a'; toast.textContent = 'Saved ✓';
     setTimeout(closeSetup, 650);
   } catch (e) {
@@ -2564,42 +2603,6 @@ details pre{margin:10px 0 0;padding:12px;background:#0f1117;color:#e2e8f0;border
     <span class="hint">Edits here only update profiles.json. <code>setup.conf</code> is rewritten on the next Collector Run.</span>
   </div>
 
-  <!-- SSH key panel: profile-agnostic, applies to every outbound SSH from
-       the collector. Upload once, OpenSSH auto-picks it up because we save
-       to the service user's ~/.ssh/id_ed25519 (standard default location). -->
-  <section class="section" id="ssh-key-section">
-    <h2>SSH key (shared across all hosts)</h2>
-    <div id="ssh-key-status" class="ssh-status">loading…</div>
-    <div class="grid" style="margin-top:12px">
-      <div class="field">
-        <label>Upload as file<span class="ph">pick the file you'd normally put in ~/.ssh/ — written with mode 0600</span></label>
-        <div style="display:flex;gap:8px;align-items:center">
-          <input id="ssh-key-file" type="file" accept=".pem,.key,id_*" style="flex:1">
-        </div>
-      </div>
-      <div class="field">
-        <label>Manage<span class="ph">replace by submitting again · delete when no longer needed</span></label>
-        <div style="display:flex;gap:8px;align-items:center">
-          <button class="btn btn-secondary" type="button" onclick="copySshPubkey()" id="ssh-pub-copy" style="display:none">Copy public key</button>
-          <button class="btn btn-secondary danger" type="button" onclick="deleteSshKey()" id="ssh-key-del" style="display:none">Delete</button>
-        </div>
-      </div>
-    </div>
-    <div class="field" style="margin-top:10px">
-      <label>Or paste private-key text<span class="ph">starts with -----BEGIN ... PRIVATE KEY-----; passphrase-protected keys not supported</span></label>
-      <textarea id="ssh-key-text" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;b3BlbnNzaC1rZXktdjEAAAAA...&#10;-----END OPENSSH PRIVATE KEY-----"
-                style="width:100%;font:11.5px ui-monospace,Consolas,monospace;padding:8px;border:1px solid var(--bd);border-radius:6px;resize:vertical"></textarea>
-    </div>
-    <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
-      <button class="btn" type="button" onclick="uploadSshKey()">Save key</button>
-      <span class="hint" style="color:var(--mut);font-size:12px">Uses whichever is filled in — paste wins if both</span>
-    </div>
-    <details id="ssh-pub-details" style="display:none;margin-top:10px">
-      <summary>Public key — copy into <code>~/.ssh/authorized_keys</code> on each rack host</summary>
-      <pre id="ssh-pub-text"></pre>
-    </details>
-  </section>
-
   <form id="form" onsubmit="return false">
     <section class="section">
       <h2>Identity</h2>
@@ -2885,7 +2888,8 @@ async function copySshPubkey(){
   }
 }
 
-refreshSshKey();
+// (SSH-key panel removed from the UI — the shared key is provisioned out-of-band.
+//  The /api/ssh-key endpoints remain for backward-compat but aren't shown here.)
 
 // ---- Self-update from GitHub ----
 // Hits /api/update which downloads main.tar.gz from the oneclick repo,
