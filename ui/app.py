@@ -30,7 +30,7 @@ from flask import Flask, abort, jsonify, redirect, render_template_string, reque
 # OneClick UI version. Bump on every push to oneclick repo so customers
 # can confirm the Update button actually applied — the new number shows
 # up in the topbar after the page reloads.
-VERSION = "1.0.17"
+VERSION = "1.0.18"
 
 SCRIPT_DIR = Path(os.environ.get("PERFQA_SCRIPT_DIR", "/opt/perf-qa"))
 SCRIPT = SCRIPT_DIR / "collect_perf_data.sh"
@@ -312,6 +312,12 @@ PROFILE_FORM_HOSTS = [
     ("CALLBOX_HOST",     "Callbox",          "blank = skip callbox section"),
     ("APP_SERVER_HOST",  "App server",       "blank = skip app-server section"),
     ("BESZEL_HUB_URL",   "Beszel hub URL",   "blank = skip Beszel screenshot"),
+    # Extra per-system fields surfaced in the "Add System" modal. SIMNOVATOR_PORT
+    # feeds SIM_API_BASE (80 on v4.x, 3002 on v3.9; blank = auto). DU/CCS are
+    # optional extra hosts stored on the profile.
+    ("SIMNOVATOR_PORT",  "Simnovator port",  "blank = auto"),
+    ("DU_HOST",          "DU host",          "optional"),
+    ("CCS_HOST",         "CCS host",         "optional"),
 ]
 
 
@@ -516,9 +522,13 @@ def _write_setup_from_profile(profile_name: str, form: dict) -> tuple[bool, str]
     out["COLLECT_REST_API"] = "1" if out["SIMNOVATOR_HOST"] else "0"
     out["COLLECT_IPERF"]    = "1" if out["UE_HOST"]         else "0"
 
-    # SIM_API_BASE auto-derives from the Simnovator host IP.
+    # SIM_API_BASE auto-derives from the Simnovator host IP + optional port
+    # (80 on v4.x, 3002 on v3.9; blank = default 80). Lets the modal target a
+    # non-default API port (e.g. a rig whose GUI is on :8080) without a code fix.
+    _sim_port = (out.get("SIMNOVATOR_PORT") or "").strip()
     if out["SIMNOVATOR_HOST"]:
-        out["SIM_API_BASE"] = f"http://{out['SIMNOVATOR_HOST']}"
+        out["SIM_API_BASE"] = (f"http://{out['SIMNOVATOR_HOST']}:{_sim_port}"
+                               if _sim_port else f"http://{out['SIMNOVATOR_HOST']}")
     else:
         out["SIM_API_BASE"] = ""
 
@@ -1745,7 +1755,7 @@ small{color:var(--mut);font-weight:400}
 .setup-edit{border-top:1px solid var(--bd);margin-top:10px;padding-top:4px}
 .setup-edit .eh{font-size:11px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;margin:8px 0 2px}
 .mfld{margin:13px 0}
-.mfld label{display:flex;align-items:baseline;gap:6px;font-size:12.5px;font-weight:600;color:#334155;margin-bottom:5px}
+.mfld label{display:block;font-size:10.5px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px}
 .mfld label .lh{font-weight:400;color:var(--mut);font-size:11px}
 .mfld input{width:100%;padding:9px 12px;border:1px solid var(--bd);border-radius:8px;font-size:13.5px;
   font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;transition:.12s}
@@ -1762,28 +1772,49 @@ small{color:var(--mut);font-weight:400}
   font-size:13.5px;font-weight:600;cursor:pointer;transition:background .15s}
 .btn-primary:hover{background:var(--brand-h)}
 .btn-primary:disabled{background:#cbd5e1;cursor:not-allowed}
+
+/* --- Systems manager (Add System) --- */
+.modal.wide{max-width:620px}
+.sys-toolbar{display:flex;align-items:center;gap:10px;margin:6px 0 12px}
+.sys-toolbar .grow{margin-left:auto;display:flex;align-items:center;gap:8px}
+.sys-toolbar label{font-size:11px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
+.sys-toolbar select{font:13px ui-sans-serif,sans-serif;padding:7px 10px;border:1px solid var(--bd);border-radius:8px;background:#fff;min-width:150px}
+.btn-add{display:inline-flex;align-items:center;gap:6px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;
+  border-radius:9px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer;transition:.12s}
+.btn-add:hover{background:#dbeafe}
+.sys-card{border:1px solid var(--bd);border-radius:11px;padding:12px 14px;margin-bottom:9px;background:#fff;transition:.12s}
+.sys-card:hover{border-color:var(--brand);box-shadow:0 2px 10px rgba(15,23,42,.06)}
+.sys-card .top{display:flex;align-items:center;gap:9px}
+.sys-card .idx{width:22px;height:22px;border-radius:6px;background:#eef2f7;color:#475569;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.sys-card .nm{font-weight:700;font-size:14px;color:#0f172a}
+.sys-card .acts{margin-left:auto;display:flex;gap:6px}
+.sys-card .acts button{border:1px solid var(--bd);background:#fff;border-radius:7px;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer;color:#334155;transition:.12s}
+.sys-card .acts button:hover{border-color:var(--brand);color:var(--brand)}
+.sys-card .acts button.del:hover{border-color:#dc2626;color:#dc2626}
+.sys-card .ips{display:flex;flex-wrap:wrap;gap:10px 18px;margin-top:9px}
+.sys-card .ip{font-size:11.5px}
+.sys-card .ip b{display:block;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;font-size:9.5px;margin-bottom:1px}
+.sys-card .ip span{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;color:#0f172a}
+.sys-empty{color:var(--mut);font-size:13px;text-align:center;padding:22px 0}
+/* form grid */
+.mrow{display:flex;gap:14px}
+.mrow .mcol{flex:1;min-width:0}
+.opt-div{display:flex;align-items:center;gap:10px;margin:16px 0 4px;color:var(--mut);font-size:10.5px;font-weight:700;letter-spacing:.06em}
+.opt-div::before,.opt-div::after{content:'';flex:1;height:1px;background:var(--bd)}
 </style>
 </head>
 <body>
 <div class="modal-overlay" id="setup-modal" onclick="if(event.target===this)closeSetup()">
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+  <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="setup-title">
     <div class="modal-head">
       <div>
-        <h3 id="setup-title">Setup</h3>
-        <div class="sub">Pick a setup to edit its host IPs</div>
+        <h3 id="setup-title">Systems</h3>
+        <div class="sub" id="setup-sub">Manage your collection targets</div>
       </div>
       <button type="button" class="modal-x" onclick="closeSetup()" aria-label="Close">&times;</button>
     </div>
-    <div class="modal-body">
-      <div class="setup-list" id="setup-list"></div>
-      <div class="setup-edit" id="setup-fields"></div>
-    </div>
-    <div class="modal-foot">
-      <a class="adv" href="/setup" title="Credentials, paths, add/delete profiles">Advanced ↗</a>
-      <span class="modal-toast" id="setup-toast"></span>
-      <button type="button" class="btn-ghost" onclick="closeSetup()">Cancel</button>
-      <button type="button" class="btn-primary" id="setup-save" onclick="saveSetup()">Save</button>
-    </div>
+    <div class="modal-body" id="setup-body"></div>
+    <div class="modal-foot" id="setup-foot"></div>
   </div>
 </div>
 <header class="topbar">
@@ -1940,76 +1971,134 @@ const PROFILE_DEFAULTS = {{ profile_defaults|tojson }};
 const HOST_FIELDS = {{ host_fields|tojson }};   // [ [KEY, label, placeholder], ... ]
 const LS_KEY = 'perfqa.selected_profile';
 
-// --- Setup modal: lists all setups (profiles); click one to edit its host
-//     IPs. Saves to profiles.json via the REST API (creds/paths stay in the
-//     Advanced page). Selecting a setup also makes it the active collection
-//     profile. ---
-let _setupSel = null;
+// --- Systems manager: list systems (profiles) as cards; Add/Edit via an
+//     Add-System form (Simnovator IP+port, UESIM/ORUSIM, Appserver, DU, CCS);
+//     Jump-to dropdown; delete. Persists to profiles.json via the REST API.
+//     Fixed creds/paths are preserved (edit) or seeded from an existing
+//     system (add). Advanced page still holds creds/paths. ---
+function _slug(s){
+  return (s||'').trim().replace(/[^A-Za-z0-9_-]+/g,'_').replace(/^_+|_+$/g,'')
+           .replace(/^([^A-Za-z])/,'s$1').slice(0,64) || 'system';
+}
 function _labelFor(name){
-  const o = $('#_profile').querySelector('option[value="' + CSS.escape(name) + '"]');
+  const o = $('#_profile').querySelector('option[value="'+CSS.escape(name)+'"]');
   return o ? o.textContent.trim() : name;
 }
-function openSetup(ev){
-  if (ev) ev.preventDefault();
-  _setupSel = $('#_profile').value;
-  $('#setup-toast').textContent = '';
-  renderSetupList();
-  renderSetupFields();
-  $('#setup-modal').classList.add('open');
-}
+// Add-System form fields: [key, label, placeholder]
+const SYS_FORM = [
+  ['SIMNOVATOR_HOST','Simnovator IP','10.237.93.90'],
+  ['SIMNOVATOR_PORT','Simnovator port (blank = auto)','3002 for v3.9 · 80 for v4.x'],
+  ['UE_HOST','UESIM / ORUSIM IP','10.237.93.0'],
+  ['APP_SERVER_HOST','Appserver IP','10.237.93.x'],
+];
+const SYS_FORM_OPT = [
+  ['DU_HOST','DU IP','10.237.93.x'],
+  ['CCS_HOST','CCS IP','10.237.93.x'],
+];
+
+function openSetup(ev){ if (ev) ev.preventDefault(); renderSystems(); $('#setup-modal').classList.add('open'); }
 function closeSetup(){ $('#setup-modal').classList.remove('open'); }
 
-function renderSetupList(){
-  $('#setup-list').innerHTML = [...$('#_profile').options].map(o => {
-    const name = o.value, label = o.textContent.trim();
-    const d = PROFILE_DEFAULTS[name] || {};
-    const bits = [];
-    if (d.SIMNOVATOR_HOST) bits.push('Sim ' + d.SIMNOVATOR_HOST);
-    if (d.UE_HOST)         bits.push('UE ' + d.UE_HOST);
-    if (d.CALLBOX_HOST)    bits.push('CB ' + d.CALLBOX_HOST);
-    const sm = bits.length ? bits.join(' · ') : 'no hosts set';
-    return `<div class="setup-row ${name === _setupSel ? 'sel' : ''}" onclick="selectSetup('${name}')">`
-         + `<div><div class="nm">${label}</div><div class="sm">${sm}</div></div><span class="chev">edit ✎</span></div>`;
-  }).join('');
+function renderSystems(){
+  $('#setup-title').textContent = 'Systems';
+  $('#setup-sub').textContent = 'Manage your collection targets';
+  const opts = [...$('#_profile').options];
+  const jump = '<div class="grow"><label>Jump to</label>'
+    + '<select onchange="if(this.value)editSystem(this.value)"><option value="">— Select System —</option>'
+    + opts.map(o => `<option value="${o.value}">${o.textContent.trim()}</option>`).join('')
+    + '</select></div>';
+  const toolbar = '<div class="sys-toolbar"><button class="btn-add" onclick="addSystem()">+ Add System</button>' + jump + '</div>';
+  const cards = opts.map((o, i) => {
+    const name = o.value, label = o.textContent.trim(), d = PROFILE_DEFAULTS[name] || {};
+    const ip = (lbl, v) => v ? `<div class="ip"><b>${lbl}</b><span>${v}</span></div>` : '';
+    const sim = d.SIMNOVATOR_HOST ? (d.SIMNOVATOR_HOST + (d.SIMNOVATOR_PORT ? (':'+d.SIMNOVATOR_PORT) : '')) : '';
+    const ips = [ip('Simnovator', sim), ip('UESIM / ORUSIM', d.UE_HOST), ip('Appserver', d.APP_SERVER_HOST),
+                 ip('DU', d.DU_HOST), ip('CCS', d.CCS_HOST)].join('')
+                 || '<div class="ip" style="color:var(--mut)">no hosts set</div>';
+    const lblEsc = label.replace(/'/g, "\\'");
+    return `<div class="sys-card"><div class="top"><span class="idx">${i+1}</span><span class="nm">${label}</span>`
+      + `<span class="acts"><button onclick="editSystem('${name}')">Edit</button>`
+      + `<button class="del" onclick="deleteSystem('${name}','${lblEsc}')">Delete</button></span></div>`
+      + `<div class="ips">${ips}</div></div>`;
+  }).join('') || '<div class="sys-empty">No systems yet — click <b>+ Add System</b>.</div>';
+  $('#setup-body').innerHTML = toolbar + cards;
+  $('#setup-foot').innerHTML = '<a class="adv" href="/setup" title="Credentials, paths, advanced fields">Advanced ↗</a>'
+    + '<span class="modal-toast" id="setup-toast"></span>'
+    + '<button class="btn-ghost" onclick="closeSetup()">Close</button>';
 }
-function selectSetup(name){ _setupSel = name; renderSetupList(); renderSetupFields(); }
 
-function renderSetupFields(){
-  const d = PROFILE_DEFAULTS[_setupSel] || {};
-  $('#setup-fields').innerHTML = '<div class="eh">Host IPs — ' + _labelFor(_setupSel) + '</div>'
-    + HOST_FIELDS.map(([k, lbl, ph]) => {
-        const v = (d[k] || '').replace(/"/g, '&quot;');
-        const eg = k.includes('URL') ? 'http://10.0.0.16:8090' : 'e.g. 10.0.0.34';
-        return `<div class="mfld"><label for="mf_${k}">${lbl} <span class="lh">${ph}</span></label>`
-             + `<input id="mf_${k}" data-key="${k}" value="${v}" placeholder="${eg}" autocomplete="off" spellcheck="false"></div>`;
-      }).join('');
+function _fld(k, lbl, ph, val){
+  const v = (val || '').replace(/"/g, '&quot;');
+  return `<div class="mfld"><label for="mf_${k}">${lbl}</label>`
+    + `<input id="mf_${k}" data-key="${k}" value="${v}" placeholder="${ph}" autocomplete="off" spellcheck="false"></div>`;
+}
+function addSystem(){ renderFormView(null); }
+function editSystem(name){ renderFormView(name); }
+function renderFormView(name){
+  const isNew = !name;
+  const d = isNew ? {} : (PROFILE_DEFAULTS[name] || {});
+  const label = isNew ? '' : _labelFor(name);
+  $('#setup-title').textContent = isNew ? '+ Add System' : 'Edit System';
+  $('#setup-sub').textContent = isNew ? 'New collection target' : name;
+  const nameFld = `<div class="mfld"><label for="mf_name">System name</label>`
+    + `<input id="mf_name" value="${label.replace(/"/g,'&quot;')}" placeholder="Lab-Node-01" ${isNew?'':'readonly'} autocomplete="off"></div>`;
+  const row2 = `<div class="mrow"><div class="mcol">${_fld(...SYS_FORM[0], d.SIMNOVATOR_HOST)}</div><div class="mcol">${_fld(...SYS_FORM[1], d.SIMNOVATOR_PORT)}</div></div>`;
+  const row3 = `<div class="mrow"><div class="mcol">${_fld(...SYS_FORM[2], d.UE_HOST)}</div><div class="mcol"></div></div>`;
+  const row4 = _fld(...SYS_FORM[3], d.APP_SERVER_HOST);
+  const opt  = `<div class="opt-div">OPTIONAL</div><div class="mrow"><div class="mcol">${_fld(...SYS_FORM_OPT[0], d.DU_HOST)}</div><div class="mcol">${_fld(...SYS_FORM_OPT[1], d.CCS_HOST)}</div></div>`;
+  $('#setup-body').innerHTML = nameFld + row2 + row3 + row4 + opt;
+  const delBtn = isNew ? '' : `<button class="btn-ghost" style="margin-right:auto;color:#dc2626;border-color:#fecaca" onclick="deleteSystem('${name}','${label.replace(/'/g,"\\'")}')">Delete</button>`;
+  $('#setup-foot').innerHTML = delBtn
+    + '<span class="modal-toast" id="setup-toast"></span>'
+    + '<button class="btn-ghost" onclick="renderSystems()">Cancel</button>'
+    + `<button class="btn-primary" id="setup-save" onclick="saveSystem(${isNew?'null':"'"+name+"'"})">Save System</button>`;
+  const f = $('#mf_name'); if (f) f.focus();
 }
 
-async function saveSetup(){
-  const name = _setupSel;
+async function saveSystem(existing){
   const save = $('#setup-save'), toast = $('#setup-toast');
-  save.disabled = true; toast.style.color = 'var(--mut)'; toast.textContent = 'Saving…';
-  const ips = {};
-  document.querySelectorAll('#setup-fields input').forEach(i => ips[i.dataset.key] = i.value.trim());
+  const nm = ($('#mf_name').value || '').trim();
+  if (!nm){ toast.style.color='#dc2626'; toast.textContent='System name required'; return; }
+  const id = existing || _slug(nm);
+  if (!existing && PROFILE_DEFAULTS[id] !== undefined){
+    toast.style.color='#dc2626'; toast.textContent='A system named "'+nm+'" already exists'; return;
+  }
+  save.disabled = true; toast.style.color='var(--mut)'; toast.textContent='Saving…';
+  const ips = {}; document.querySelectorAll('#setup-body input[data-key]').forEach(i => ips[i.dataset.key] = i.value.trim());
   try {
-    // Fetch the full profile so we preserve fixed creds/paths, then PUT back
-    // with the updated IPs (the PUT replaces the whole profile record).
-    const cur = await (await fetch('/api/profiles/' + encodeURIComponent(name))).json();
-    const body = { label: cur.label || name, fixed: cur.fixed || {},
-                   defaults: { ...(cur.defaults || {}), ...ips } };
-    const r = await fetch('/api/profiles/' + encodeURIComponent(name), {
-      method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
-    const j = await r.json();
-    if (!r.ok || !j.ok) throw new Error(j.message || 'save failed');
-    PROFILE_DEFAULTS[name] = body.defaults;   // keep the page in sync
-    $('#_profile').value = name;              // selecting a setup makes it active
-    onProfileChange();                        // re-tick section checkboxes
-    renderSetupList();                        // refresh the row summaries
-    toast.style.color = '#16a34a'; toast.textContent = 'Saved ✓';
-    setTimeout(closeSetup, 650);
-  } catch (e) {
-    toast.style.color = '#dc2626'; toast.textContent = 'Error: ' + e.message;
-  } finally { save.disabled = false; }
+    let cur = { label: nm, defaults: {}, fixed: {} };
+    if (existing){
+      cur = await (await fetch('/api/profiles/'+encodeURIComponent(existing))).json();
+    } else {
+      // New system: seed fixed creds/paths from the first existing system.
+      const tmpl = ([...$('#_profile').options][0] || {}).value;
+      if (tmpl){ const t = await (await fetch('/api/profiles/'+encodeURIComponent(tmpl))).json(); cur.fixed = t.fixed || {}; }
+    }
+    const body = { label: nm, fixed: cur.fixed || {}, defaults: { ...(cur.defaults || {}), ...ips } };
+    const r = await fetch('/api/profiles/'+encodeURIComponent(id), {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+    const j = await r.json(); if (!r.ok || !j.ok) throw new Error(j.message || 'save failed');
+    PROFILE_DEFAULTS[id] = body.defaults;
+    let opt = $('#_profile').querySelector('option[value="'+CSS.escape(id)+'"]');
+    if (!opt){ opt = document.createElement('option'); opt.value = id; $('#_profile').appendChild(opt); }
+    opt.textContent = nm;
+    $('#_profile').value = id; onProfileChange();
+    toast.style.color='#16a34a'; toast.textContent='Saved ✓';
+    setTimeout(renderSystems, 600);
+  } catch (e){ toast.style.color='#dc2626'; toast.textContent='Error: '+e.message; }
+  finally { save.disabled = false; }
+}
+
+async function deleteSystem(name, label){
+  if (!confirm('Delete system "'+(label||name)+'"? This removes its saved IPs.')) return;
+  try {
+    const r = await fetch('/api/profiles/'+encodeURIComponent(name), { method:'DELETE' });
+    const j = await r.json(); if (!r.ok || !j.ok) throw new Error(j.message || 'delete failed');
+    delete PROFILE_DEFAULTS[name];
+    const opt = $('#_profile').querySelector('option[value="'+CSS.escape(name)+'"]'); if (opt) opt.remove();
+    if ($('#_profile').value === name){ $('#_profile').selectedIndex = 0; onProfileChange(); }
+    renderSystems();
+  } catch (e){ alert('Delete failed: '+e.message); }
 }
 // Esc closes the modal
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSetup(); });
