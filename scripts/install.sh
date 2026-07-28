@@ -263,11 +263,19 @@ UPDATE_TARBALL_URL_DEFAULT="https://api.github.com/repos/Simnovus-Tech/oneclick/
 UPDATER_PATH="/usr/local/sbin/perfqa-update"
 UPDATE_TOKEN_FILE="/etc/oneclick/update_token"
 
-# Persist an install-time token root-only (only if one was supplied; otherwise
-# leave any existing token file untouched so updates keep working across runs).
-if [[ -n "${ONECLICK_UPDATE_TOKEN:-}" ]]; then
+# Baked-in read token for the private repo. INTENTIONALLY EMPTY in git — the
+# customer build (dist tarball) injects the real value here at build time, so a
+# hand-delivered build self-authenticates with zero key handling on the customer
+# side. It is never committed, so the public mirror + GitHub secret-scanning
+# never see it.
+UPDATE_TOKEN_BAKED=""
+
+# Token precedence: explicit env > baked-in build value > whatever's already on
+# disk (left untouched). Plant it root-only so the perfqa-update wrapper can auth.
+_tok_to_plant="${ONECLICK_UPDATE_TOKEN:-${UPDATE_TOKEN_BAKED}}"
+if [[ -n "${_tok_to_plant}" ]]; then
     install -d -m 0700 /etc/oneclick
-    printf '%s' "${ONECLICK_UPDATE_TOKEN}" > "${UPDATE_TOKEN_FILE}"
+    printf '%s' "${_tok_to_plant}" > "${UPDATE_TOKEN_FILE}"
     chmod 0600 "${UPDATE_TOKEN_FILE}"
     log "Stored private-repo update token -> ${UPDATE_TOKEN_FILE} (root-only 0600)"
 fi
