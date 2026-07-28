@@ -30,7 +30,7 @@ from flask import Flask, abort, jsonify, redirect, render_template_string, reque
 # OneClick UI version. Bump on every push to oneclick repo so customers
 # can confirm the Update button actually applied — the new number shows
 # up in the topbar after the page reloads.
-VERSION = "1.0.14"
+VERSION = "1.0.15"
 
 SCRIPT_DIR = Path(os.environ.get("PERFQA_SCRIPT_DIR", "/opt/perf-qa"))
 SCRIPT = SCRIPT_DIR / "collect_perf_data.sh"
@@ -160,6 +160,7 @@ def index():
         HTML,
         host_label=os.uname().nodename,
         profiles=profiles, profile_defaults=profile_defaults,
+        host_fields=PROFILE_FORM_HOSTS,
         beszel_url=_default_beszel_url(),
         version=VERSION,
         # First-load default profile if localStorage has nothing; the page's
@@ -1717,9 +1718,60 @@ select{font-weight:500;cursor:pointer}
 .step[data-state="fail"] + .step-arrow{color:var(--err)}
 
 small{color:var(--mut);font-weight:400}
+
+/* --- Setup modal: quick host-IP editor for the selected profile --- */
+.modal-overlay{position:fixed;inset:0;background:rgba(15,23,42,.55);backdrop-filter:blur(3px);
+  display:none;align-items:center;justify-content:center;z-index:200;padding:20px}
+.modal-overlay.open{display:flex}
+.modal{background:#fff;border-radius:14px;box-shadow:0 24px 64px rgba(15,23,42,.35);
+  width:100%;max-width:460px;max-height:90vh;overflow:auto;animation:modal-in .16s ease}
+@keyframes modal-in{from{opacity:0;transform:translateY(10px) scale(.97)}to{opacity:1;transform:none}}
+.modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:20px 22px 4px}
+.modal-head h3{margin:0;font-size:16.5px;font-weight:700;color:#0f172a;letter-spacing:-.01em}
+.modal-head .sub{font-size:12px;color:var(--mut);font-weight:500;margin-top:3px}
+.modal-x{background:none;border:0;font-size:24px;line-height:1;color:var(--mut);cursor:pointer;
+  padding:0 6px;border-radius:6px;transition:.12s}
+.modal-x:hover{background:#f1f5f9;color:#0f172a}
+.modal-body{padding:8px 22px 4px}
+.mfld{margin:13px 0}
+.mfld label{display:flex;align-items:baseline;gap:6px;font-size:12.5px;font-weight:600;color:#334155;margin-bottom:5px}
+.mfld label .lh{font-weight:400;color:var(--mut);font-size:11px}
+.mfld input{width:100%;padding:9px 12px;border:1px solid var(--bd);border-radius:8px;font-size:13.5px;
+  font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;transition:.12s}
+.mfld input:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px rgba(249,115,22,.12)}
+.mfld input::placeholder{color:#cbd5e1;font-family:ui-sans-serif,sans-serif}
+.modal-foot{display:flex;align-items:center;gap:10px;padding:14px 22px 18px;margin-top:8px;border-top:1px solid var(--bd)}
+.modal-foot .adv{margin-right:auto;font-size:12px;color:var(--mut);text-decoration:none;font-weight:500}
+.modal-foot .adv:hover{color:var(--brand)}
+.modal-toast{font-size:12.5px;font-weight:600}
+.btn-ghost{background:#fff;border:1px solid var(--bd);color:#334155;border-radius:8px;padding:8px 16px;
+  font-size:13.5px;font-weight:600;cursor:pointer;transition:.12s}
+.btn-ghost:hover{background:#f8fafc}
+.btn-primary{background:var(--brand);border:0;color:#fff;border-radius:8px;padding:8px 18px;
+  font-size:13.5px;font-weight:600;cursor:pointer;transition:background .15s}
+.btn-primary:hover{background:var(--brand-h)}
+.btn-primary:disabled{background:#cbd5e1;cursor:not-allowed}
 </style>
 </head>
 <body>
+<div class="modal-overlay" id="setup-modal" onclick="if(event.target===this)closeSetup()">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+    <div class="modal-head">
+      <div>
+        <h3 id="setup-title">Host IPs</h3>
+        <div class="sub" id="setup-sub"></div>
+      </div>
+      <button type="button" class="modal-x" onclick="closeSetup()" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body" id="setup-fields"></div>
+    <div class="modal-foot">
+      <a class="adv" href="/setup" title="Credentials, paths, add/delete profiles">Advanced ↗</a>
+      <span class="modal-toast" id="setup-toast"></span>
+      <button type="button" class="btn-ghost" onclick="closeSetup()">Cancel</button>
+      <button type="button" class="btn-primary" id="setup-save" onclick="saveSetup()">Save</button>
+    </div>
+  </div>
+</div>
 <header class="topbar">
   <img class="logo" src="/static/logo.svg" alt="Simnovus">
   <div class="divider"></div>
@@ -1727,7 +1779,7 @@ small{color:var(--mut);font-weight:400}
   <nav class="topnav">
     <a href="/" class="active">Collector</a>
     <a href="/logs">Logs</a>
-    <a href="/setup">Setup</a>
+    <a href="#" onclick="openSetup(event)">Setup</a>
   </nav>
   <div class="right">
     <a class="ri-pill" id="run-indicator" href="/logs" style="display:none" title="A collection is in progress — click to view live log">
@@ -1871,7 +1923,57 @@ const logEl = $('#log'), statusEl = $('#status'), resultEl = $('#result'), btn =
 // Profile data injected from server. Used to pre-fill the section checkboxes
 // (blank IP for a host -> related sections default off).
 const PROFILE_DEFAULTS = {{ profile_defaults|tojson }};
+const HOST_FIELDS = {{ host_fields|tojson }};   // [ [KEY, label, placeholder], ... ]
 const LS_KEY = 'perfqa.selected_profile';
+
+// --- Setup modal: edit the selected profile's host IPs (creds/paths live in
+//     the Advanced page). Saves straight to profiles.json via the REST API. ---
+function openSetup(ev){
+  if (ev) ev.preventDefault();
+  const name = $('#_profile').value;
+  const defs = PROFILE_DEFAULTS[name] || {};
+  const opt = $('#_profile').selectedOptions[0];
+  const label = opt ? opt.textContent.trim() : name;
+  $('#setup-title').textContent = 'Host IPs';
+  $('#setup-sub').textContent = label;
+  $('#setup-toast').textContent = '';
+  $('#setup-fields').innerHTML = HOST_FIELDS.map(([k, lbl, ph]) => {
+    const v = (defs[k] || '').replace(/"/g, '&quot;');
+    const eg = k.includes('URL') ? 'http://10.0.0.16:8090' : 'e.g. 10.0.0.34';
+    return `<div class="mfld"><label for="mf_${k}">${lbl} <span class="lh">${ph}</span></label>`
+         + `<input id="mf_${k}" data-key="${k}" value="${v}" placeholder="${eg}" autocomplete="off" spellcheck="false"></div>`;
+  }).join('');
+  $('#setup-modal').classList.add('open');
+  const first = $('#setup-fields input'); if (first) first.focus();
+}
+function closeSetup(){ $('#setup-modal').classList.remove('open'); }
+
+async function saveSetup(){
+  const name = $('#_profile').value;
+  const save = $('#setup-save'); const toast = $('#setup-toast');
+  save.disabled = true; toast.style.color = 'var(--mut)'; toast.textContent = 'Saving…';
+  const ips = {};
+  document.querySelectorAll('#setup-fields input').forEach(i => ips[i.dataset.key] = i.value.trim());
+  try {
+    // Fetch the full profile so we preserve fixed creds/paths, then PUT back
+    // with the updated IPs (the PUT replaces the whole profile record).
+    const cur = await (await fetch('/api/profiles/' + encodeURIComponent(name))).json();
+    const body = { label: cur.label || name, fixed: cur.fixed || {},
+                   defaults: { ...(cur.defaults || {}), ...ips } };
+    const r = await fetch('/api/profiles/' + encodeURIComponent(name), {
+      method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.message || 'save failed');
+    PROFILE_DEFAULTS[name] = body.defaults;   // keep the page in sync
+    onProfileChange();                        // re-tick section checkboxes
+    toast.style.color = '#16a34a'; toast.textContent = 'Saved ✓';
+    setTimeout(closeSetup, 650);
+  } catch (e) {
+    toast.style.color = '#dc2626'; toast.textContent = 'Error: ' + e.message;
+  } finally { save.disabled = false; }
+}
+// Esc closes the modal
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSetup(); });
 
 function onProfileChange(){
   const sel = $('#_profile');
